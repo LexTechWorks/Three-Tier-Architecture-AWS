@@ -59,3 +59,26 @@ variable "target_group_arn" {
   description = "ARN do Target Group do ALB"
   type        = string
 }
+
+variable "name_prefix" {
+  description = "Prefixo para nomear os recursos"
+  type        = string
+}
+
+variable "environment" {
+  description = "Ambiente (dev, staging, prod)"
+  type        = string
+  default     = "dev"
+}
+
+variable "root_volume_size" {
+  description = "Tamanho do volume raiz em GB"
+  type        = number
+  default     = 8
+}
+
+variable "tags" {
+  description = "Tags adicionais para os recursos"
+  type        = map(string)
+  default     = {}
+}

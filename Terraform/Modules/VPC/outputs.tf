@@ -1,33 +1,50 @@
-output "security_group_id" {
-  description = "ID da security group criada na AWS"
+output "bastion_security_group_id" {
+  description = "Security Group do Bastion Host"
   value       = aws_security_group.security_group.id
 }
 
-#output "vm_ips" {
-# value = module.ec2.vm_public_ip
-#}
-
-output "public_subnet_ids" {
-  value = [aws_subnet.public_subnet_a.id, aws_subnet.public_subnet_b.id]
-}
 output "vpc_id" {
-  value = aws_vpc.vpc.id
+  description = "ID da VPC"
+  value       = aws_vpc.vpc.id
 }
 
-output "public_subnet_a" {
-  description = "ID da subnet pública na AZ us-east-1a"
-  value       = aws_subnet.public_subnet_a.id
+output "bastion_subnet_id" {
+  description = "ID da subnet pública para Bastion"
+  value       = aws_subnet.public_subnet_bastion.id
 }
 
-output "public_subnet_b" {
-  description = "ID da subnet pública na AZ us-east-1b"
-  value       = aws_subnet.public_subnet_b.id
-}
-
-output "private_subnet_ids" {
-  description = "Lista de subnets privadas"
+output "private_app_subnet_ids" {
+  description = "IDs das subnets privadas para aplicação"
   value = [
-    aws_subnet.private_subnet_a.id,
-    aws_subnet.private_subnet_b.id
+    aws_subnet.private_subnet_app_a.id,
+    aws_subnet.private_subnet_app_b.id
   ]
+}
+
+output "private_db_subnet_ids" {
+  description = "IDs das subnets privadas para banco de dados"
+  value = [
+    aws_subnet.private_subnet_db_a.id,
+    aws_subnet.private_subnet_db_b.id
+  ]
+}
+
+output "alb_security_group_id" {
+  description = "ID do security group do ALB"
+  value       = aws_security_group.alb_sg.id
+}
+
+output "nat_gateway_id" {
+  description = "ID do NAT Gateway"
+  value       = aws_nat_gateway.nat.id
+}
+
+output "rds_security_group_id" {
+  description = "ID do security group do RDS"
+  value       = aws_security_group.rds_sg.id
+}
+
+output "app_security_group_id" {
+  description = "ID do security group usado para aplicação"
+  value       = aws_security_group.security_group.id
 }

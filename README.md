@@ -1,34 +1,49 @@
 # Projeto DevOps: Infraestrutura Automatizada com Terraform, Jenkins e Ansible
 
-Este projeto provisiona uma infraestrutura automatizada na AWS como prática de DevOps, utilizando:
+Este projeto provisiona uma infraestrutura automatizada na AWS utilizando práticas de DevOps modernas, com foco em alta disponibilidade, segurança e modularização.
 
-- **Terraform** para criar a infraestrutura (VPC, subnets, EC2, Load Balancer)
-- **Jenkins** como orquestrador de pipeline CI/CD
-- **Ansible** para configurar automaticamente as instâncias EC2 (instalação do Nginx, etc.)
+## 🔧 Tecnologias Utilizadas
 
-## Arquitetura
+- **Terraform** – Provisionamento da infraestrutura (VPC, Subnets, EC2, Load Balancer, Auto Scaling)
+- **Jenkins** – Orquestração da pipeline CI/CD
+- **Ansible** – Configuração automática das instâncias EC2 (instalação do Nginx e ajustes adicionais)
 
-- VPC personalizada com 2 subnets públicas em Zonas de Disponibilidade diferentes
-- 2 instâncias EC2 com Nginx provisionadas automaticamente via Ansible
-- Load Balancer (ALB) distribuindo tráfego entre as instâncias
-- Jenkins executa pipeline que dispara o Terraform e Ansible
-- Armazenamento remoto de estado do Terraform via S3
+## 🏗️ Arquitetura - Tier 3 (3 Camadas)
 
-## Módulos Terraform
+- **Camada 1 – Bastion**:
+  - Instância em **subnet pública** com acesso SSH restrito por IP
+  - Utilizada como ponto de acesso seguro à infraestrutura
+- **Camada 2 – Aplicação**:
+  - EC2s em **subnets privadas**, configuradas com Nginx via Ansible
+  - Recebem tráfego interno do Load Balancer
+- **Camada 3 – Banco de Dados (Opcional)**:
+  - Subnets privadas reservadas para RDS (não utilizadas no momento)
+- **ALB**:
+  - Load Balancer público com HTTPS via certificado ACM
+  - Redirecionamento HTTP → HTTPS
+- **NAT Gateway**:
+  - Permite que instâncias privadas acessem a internet com segurança
 
-- `VPC`: configura rede, internet gateway e grupos de segurança
-- `EC2`: cria as instâncias que serão configuradas via Ansible
-- `LB`: cria o Application Load Balancer e o Target Group
+## 📦 Módulos Terraform
 
-## Automação com Jenkins e Ansible
+- `VPC` – Cria a VPC, subnets públicas/privadas, NAT, rotas e SGs
+- `LB` – Provisiona o Application Load Balancer com HTTPS
+- `ASG` – Gerencia grupos de Auto Scaling para bastion e aplicação
+- `Outputs` – Exporta informações úteis como DNS do ALB e subnets
 
-- Jenkins executa o pipeline de provisionamento e configuração
-- Playbook Ansible instala e configura o Nginx nas EC2
-- Uso de chave privada SSH e inventário dinâmico ou fixo
+## 🤖 Automação com Jenkins e Ansible
 
-## Como usar
+- Jenkins pipeline executa:
+  1. `terraform init && terraform apply`
+  2. Playbook Ansible com SSH na instância da aplicação
+- Ansible realiza:
+  - Instalação do Nginx
+  - Criação do `index.html` customizado
+  - Configurações de firewall/local
 
-1. Inicialize o Terraform:
+## 🚀 Como usar
 
+1. Clone o repositório:
 ```bash
-terraform init
+git clone https://github.com/JoaumGabrielSS/projeto-devops.git
+cd projeto-devops

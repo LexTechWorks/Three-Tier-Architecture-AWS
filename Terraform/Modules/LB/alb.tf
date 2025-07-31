@@ -1,13 +1,21 @@
 resource "aws_lb" "alb" {
-  name               = "site-alb-lex-technology"
+  name               = "alb-${var.environment}"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [var.security_group_id]
   subnets            = var.subnet_ids
+
+  enable_deletion_protection = true
+
+  tags = {
+    Name        = "alb-${var.environment}"
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
 }
 
 resource "aws_lb_target_group" "tg" {
-  name        = "tg-lextech"
+  name        = "tg-${var.environment}"
   port        = 80
   protocol    = "HTTP"
   target_type = "instance"
@@ -22,12 +30,37 @@ resource "aws_lb_target_group" "tg" {
     healthy_threshold   = 2
     unhealthy_threshold = 2
   }
+
+  tags = {
+    Name        = "tg-${var.environment}"
+    Environment = var.environment
+  }
 }
 
-resource "aws_lb_listener" "listener" {
+# Redirect HTTP to HTTPS
+resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.alb.arn
   port              = 80
   protocol          = "HTTP"
+
+  default_action {
+    type = "redirect"
+
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+# HTTPS Listener
+resource "aws_lb_listener" "https" {
+  load_balancer_arn = aws_lb.alb.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-2016-08"
+  certificate_arn   = var.certificate_arn
 
   default_action {
     type             = "forward"
