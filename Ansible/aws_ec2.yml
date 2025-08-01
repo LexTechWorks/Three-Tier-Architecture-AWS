@@ -1,0 +1,20 @@
+plugin: amazon.aws.aws_ec2
+regions:
+  - us-east-1
+
+filters:
+  tag:Environment: prod
+  tag:Project: ansible-integration
+  instance-state-name: running
+
+keyed_groups:
+  - key: tags.Environment
+    prefix: env
+  - key: tags.Role
+    prefix: role
+
+hostnames:
+  - private-ip-address
+
+compose:
+  ansible_host: private_ip_address

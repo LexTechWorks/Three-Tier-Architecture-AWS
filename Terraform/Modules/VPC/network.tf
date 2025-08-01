@@ -28,9 +28,10 @@ resource "aws_subnet" "public_subnet_bastion" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name        = "public-subnet-bastion"
+    Name        = "${var.environment}-public-bastion"
     Environment = var.environment
     Tier        = "public"
+    ManagedBy   = "terraform"
   }
 }
 
@@ -246,51 +247,77 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-# NACL para subnets públicas
-resource "aws_network_acl" "public" {
-  vpc_id     = aws_vpc.vpc.id
-  subnet_ids = [aws_subnet.public_subnet_bastion.id]
-
-  ingress {
-    protocol   = "tcp"
-    rule_no    = 100
-    action     = "allow"
-    cidr_block = var.allowed_ssh_cidr
-    from_port  = 22
-    to_port    = 22
-  }
-
-  egress {
-    protocol   = -1
-    rule_no    = 100
-    action     = "allow"
-    cidr_block = "0.0.0.0/0"
-    from_port  = 0
-    to_port    = 0
-  }
-
-  tags = {
-    Name        = "public-nacl"
-    Environment = var.environment
-  }
-}
-
-#RDS
-resource "aws_security_group" "rds_sg" {
-  name        = "rds-security-group"
-  description = "Security group para RDS"
+resource "aws_security_group" "bastion_sg" {
+  name        = "${var.environment}-bastion-sg"
+  description = "SG para Bastion"
   vpc_id      = aws_vpc.vpc.id
 
   ingress {
-    description     = "MySQL/Aurora"
-    from_port       = 3306
-    to_port         = 3306
-    protocol        = "tcp"
-    security_groups = [aws_security_group.security_group.id]
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.allowed_ssh_cidr]
   }
 
-  tags = {
-    Name        = "rds-security-group"
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+    tags = {
+    Name        = "${var.environment}-bastion-sg"
     Environment = var.environment
   }
 }
+
+resource "aws_security_group" "app_sg" {
+  name        = "${var.environment}-app-sg"
+  description = "SG para instancias de aplicacao"
+  vpc_id      = aws_vpc.vpc.id
+
+  ingress {
+    description     = "HTTP da ALB"
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+      tags = {
+    Name        = "${var.environment}-app-sg"
+    Environment = var.environment
+  }
+}
+
+#resource "aws_security_group" "rds_sg" {
+#  name        = "rds-security-group"
+#  description = "SG para RDS"
+#  vpc_id      = aws_vpc.vpc.id
+#
+#  ingress {
+#    description     = "MySQL da aplicação"
+#    from_port       = 3306
+#    to_port         = 3306
+#    protocol        = "tcp"
+#    security_groups = [aws_security_group.app_sg.id]
+#  }
+#
+#  egress {
+#    from_port   = 0
+#    to_port     = 0
+#    protocol    = "-1"
+#    cidr_blocks = ["0.0.0.0/0"]
+#  }
+#
+#  tags = {
+#    Name        = "rds-security-group"
+#    Environment = var.environment
+#  }
+#}

@@ -1,8 +1,3 @@
-output "bastion_security_group_id" {
-  description = "Security Group do Bastion Host"
-  value       = aws_security_group.security_group.id
-}
-
 output "vpc_id" {
   description = "ID da VPC"
   value       = aws_vpc.vpc.id
@@ -39,12 +34,12 @@ output "nat_gateway_id" {
   value       = aws_nat_gateway.nat.id
 }
 
-output "rds_security_group_id" {
-  description = "ID do security group do RDS"
-  value       = aws_security_group.rds_sg.id
+output "app_security_group_id" {
+  description = "ID do SG da aplicação"
+  value       = aws_security_group.app_sg.id
 }
 
-output "app_security_group_id" {
-  description = "ID do security group usado para aplicação"
-  value       = aws_security_group.security_group.id
+output "bastion_security_group_id" {
+  description = "ID do SG do Bastion"
+  value       = aws_security_group.bastion_sg.id
 }

@@ -1,29 +1,38 @@
 #!/bin/bash
-# Bastion Host Setup Script
+# Bastion Host Setup Script - Ubuntu
+
+# Variável do ambiente (será substituída via Terraform)
+ENVIRONMENT="${ENVIRONMENT}"
 
 # Atualiza o sistema
-yum update -y
+apt update -y && apt upgrade -y
 
 # Instala ferramentas úteis
-yum install -y htop wget curl tcpdump
+apt install -y htop wget curl tcpdump unzip git python3 python3-pip
 
-# Configura o banner SSH
+# Instala Ansible e dependências AWS
+pip3 install ansible boto3 botocore
+apt install -y ansible-core
+
+# Cria estrutura padrão do Ansible
+mkdir -p /etc/ansible
+chown -R ubuntu:ubuntu /etc/ansible
+
+# Cria banner de aviso no SSH
 cat > /etc/ssh/banner << EOF
 *******************************************
 *     Bastion Host - Acesso Restrito     *
-*         Ambiente: ${environment}        *
+*         Ambiente: ${ENVIRONMENT}        *
 *******************************************
 EOF
 
-# Fortalece a configuração SSH
-sed -i 's/#Banner none/Banner \/etc\/ssh\/banner/' /etc/ssh/sshd_config
-sed -i 's/#LogLevel INFO/LogLevel VERBOSE/' /etc/ssh/sshd_config
-sed -i 's/#MaxAuthTries 6/MaxAuthTries 3/' /etc/ssh/sshd_config
+# Configurações de segurança no SSH
+sed -i 's|#Banner none|Banner /etc/ssh/banner|' /etc/ssh/sshd_config
+sed -i 's|#LogLevel INFO|LogLevel VERBOSE|' /etc/ssh/sshd_config
+sed -i 's|#MaxAuthTries 6|MaxAuthTries 3|' /etc/ssh/sshd_config
 
-# Reinicia o serviço SSH
-systemctl restart sshd
+# Reinicia o SSH
+systemctl restart ssh
 
-# Configura CloudWatch Logs
-yum install -y awslogs
-systemctl start awslogsd
-systemctl enable awslogsd
+# Mensagem final
+echo "Configuração do Bastion finalizada com sucesso."

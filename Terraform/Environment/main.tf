@@ -22,7 +22,7 @@ provider "aws" {
     tags = {
       owner       = var.owner
       environment = var.environment
-      managed-by  = "terraform"
+      managed-by  = "Terraform"
     }
   }
 }
@@ -56,46 +56,42 @@ resource "aws_key_pair" "key" {
   }
 }
 
-# ASG para Bastion Host
-module "bastion_asg" {
-  source            = "../Modules/ASG"
-  name_prefix       = "bastion"
-  environment       = var.environment
-  ami_id            = var.bastion_ami_id
-  instance_type     = var.bastion_instance_type
-  key_name          = aws_key_pair.key.key_name
-  security_group_id = module.vpc.bastion_security_group_id
-  subnet_ids        = [module.vpc.bastion_subnet_id]
-  user_data_script  = "${path.module}/scripts/bastion_setup.sh"
-  min_size          = 1
-  max_size          = 1
-  desired_capacity  = 1
-  root_volume_size  = 8
-  target_group_arn  = ""
-
-  tags = {
-    Type = "bastion"
-  }
+module "bastion" {
+  source              = "../Modules/Bastiao"
+  bastion_ami_id      = var.bastion_ami_id
+  bastion_instance_type = var.bastion_instance_type
+  key_name            = aws_key_pair.key.key_name
+  subnet_id           = module.vpc.bastion_subnet_id
+  security_group_id   = module.vpc.bastion_security_group_id
+  environment         = var.environment
+  user_data_script    = "${path.module}/scripts/bastion_setup.sh"
 }
 
-# ASG para Application
 module "app_asg" {
-  source            = "../Modules/ASG"
-  name_prefix       = "app"
-  environment       = var.environment
-  ami_id            = var.app_ami_id
-  instance_type     = var.app_instance_type
-  key_name          = aws_key_pair.key.key_name
-  security_group_id = module.vpc.app_security_group_id
-  subnet_ids        = module.vpc.private_app_subnet_ids
-  user_data_script  = "${path.module}/scripts/app_setup.sh"
-  min_size          = var.app_min_size
-  max_size          = var.app_max_size
-  desired_capacity  = var.app_desired_capacity
-  target_group_arn  = module.alb.target_group_arn
-  root_volume_size  = 10
-
+  source                   = "../Modules/ASG"
+  name_prefix              = "app"
+  environment              = var.environment
+  ami_id                   = var.app_ami_id
+  instance_type            = var.app_instance_type
+  key_name                 = aws_key_pair.key.key_name
+  security_group_id        = module.vpc.app_security_group_id
+  subnet_ids               = module.vpc.private_app_subnet_ids
+  min_size                 = var.app_min_size
+  max_size                 = var.app_max_size
+  desired_capacity         = var.app_desired_capacity
+  target_group_arn         = module.alb.target_group_arn
+  root_volume_size         = 10
   tags = {
     Type = "application"
   }
+}
+
+module "route53" {
+  source       = "../Modules/Route53"
+  environment  = var.environment
+  domain_name  = var.domain_name
+  alb_dns_name = module.alb.alb_dns_name
+  alb_zone_id  = module.alb.alb_zone_id
+
+  depends_on = [module.alb]
 }

@@ -10,10 +10,10 @@ output "vpc_id" {
   value       = module.vpc.vpc_id
 }
 
-# Outputs do Bastion
-output "bastion_asg_name" {
-  description = "Nome do Auto Scaling Group do Bastion"
-  value       = module.bastion_asg.asg_name
+# Output do Bastion
+output "bastion_public_ip" {
+  description = "IP público do Bastion Host"
+  value       = module.bastion.public_ip
 }
 
 # Outputs da Aplicação
@@ -21,18 +21,6 @@ output "app_asg_name" {
   description = "Nome do Auto Scaling Group da Aplicação"
   value       = module.app_asg.asg_name
 }
-
-## Outputs do RDS
-#output "database_endpoint" {
-#  description = "Endpoint de conexão do RDS"
-#  value       = module.rds.db_instance_endpoint
-#  sensitive   = false
-#}
-
-#output "database_subnet_group" {
-#  description = "Nome do grupo de subnets do RDS"
-#  value       = module.rds.db_subnet_group_name
-#}
 
 # Outputs de Rede
 output "private_app_subnet_ids" {

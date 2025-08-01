@@ -32,12 +32,6 @@ variable "subnet_ids" {
   type        = list(string)
 }
 
-variable "user_data_script" {
-  description = "Caminho para o script de inicialização"
-  type        = string
-  default     = "/script.sh"
-}
-
 variable "min_size" {
   description = "Mínimo de instâncias"
   type        = number
@@ -82,3 +76,4 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+

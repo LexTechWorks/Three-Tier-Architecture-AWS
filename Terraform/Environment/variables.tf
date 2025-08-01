@@ -13,6 +13,7 @@ variable "environment" {
 variable "owner" {
   description = "Responsável pela infraestrutura"
   type        = string
+  default     = "Lextechworks"
 }
 
 variable "key_name" {
@@ -94,7 +95,7 @@ variable "availability_zones" {
   }
 }
 
-#variable "private_db_subnet_ids" {
-#  description = "IDs das subnets privadas para o banco de dados"
-#  type        = list(string)
-#}
+variable "domain_name" {
+  description = "Nome do domínio para o Route53"
+  type        = string
+}
