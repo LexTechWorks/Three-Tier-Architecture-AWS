@@ -11,11 +11,11 @@ echo "🚀 Iniciando configuração do Bastion Host..."
 
 # Atualiza o sistema
 echo "📦 Atualizando sistema..."
-apt update -y && apt upgrade -y
+sudo apt update -y && sudo apt upgrade -y
 
 # Instala ferramentas essenciais
 echo "🔧 Instalando ferramentas essenciais..."
-apt install -y \
+sudo apt install -y \
     htop \
     wget \
     curl \
@@ -36,14 +36,17 @@ echo "☁️ Instalando AWS CLI..."
 if ! command -v aws &> /dev/null; then
     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
     unzip awscliv2.zip
-    ./aws/install
+    sudo ./aws/install
     rm -rf aws awscliv2.zip
 fi
 
-# Instala Ansible e dependências AWS
+# Instala Ansible via apt (compatível com Ubuntu 22.04+)
 echo "🤖 Instalando Ansible..."
-pip3 install --upgrade pip
-pip3 install ansible boto3 botocore ansible-core
+sudo apt update
+sudo apt install -y ansible python3-boto3 python3-botocore
+
+# Instala pip para coleções específicas se necessário
+sudo apt install -y python3-pip python3-full
 
 # Instala coleções do Ansible
 echo "📚 Instalando coleções do Ansible..."
@@ -166,7 +169,7 @@ EOF
 chown -R ubuntu:ubuntu /home/ubuntu/
 
 # Cria banner de aviso no SSH
-cat > /etc/ssh/banner << EOF
+sudo tee /etc/ssh/banner > /dev/null << EOF
 *******************************************
 *     Bastion Host - Acesso Restrito     *
 *         Ambiente: ${ENVIRONMENT}        *
@@ -175,12 +178,12 @@ cat > /etc/ssh/banner << EOF
 EOF
 
 # Configurações de segurança no SSH
-sed -i 's|#Banner none|Banner /etc/ssh/banner|' /etc/ssh/sshd_config
-sed -i 's|#LogLevel INFO|LogLevel VERBOSE|' /etc/ssh/sshd_config
-sed -i 's|#MaxAuthTries 6|MaxAuthTries 3|' /etc/ssh/sshd_config
+sudo sed -i 's|#Banner none|Banner /etc/ssh/banner|' /etc/ssh/sshd_config
+sudo sed -i 's|#LogLevel INFO|LogLevel VERBOSE|' /etc/ssh/sshd_config
+sudo sed -i 's|#MaxAuthTries 6|MaxAuthTries 3|' /etc/ssh/sshd_config
 
 # Restart SSH service
-systemctl restart ssh
+sudo systemctl restart ssh
 
 # Mensagem final
 echo "✅ Configuração do Bastion finalizada com sucesso!"

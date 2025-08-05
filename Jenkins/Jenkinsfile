@@ -176,8 +176,20 @@ pipeline {
                         // Copia arquivos do Ansible para o Bastion
                         sh """
                             echo "📂 Enviando playbooks para o Bastion..."
-                            scp -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no -r ${env.ANSIBLE_DIR}/* ubuntu@${env.BASTION_IP}:~/ansible/
-                            ssh -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ubuntu@${env.BASTION_IP} 'chmod +x ~/ansible/*.sh'
+                            ssh -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ubuntu@${env.BASTION_IP} 'mkdir -p ~/ansible/templates'
+                            
+                            # Copia arquivos essenciais do Ansible
+                            scp -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ${env.ANSIBLE_DIR}/ansible.cfg ubuntu@${env.BASTION_IP}:~/ansible/
+                            scp -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ${env.ANSIBLE_DIR}/aws_ec2.yml ubuntu@${env.BASTION_IP}:~/ansible/
+                            scp -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ${env.ANSIBLE_DIR}/playbook-nginx.yml ubuntu@${env.BASTION_IP}:~/ansible/
+                            scp -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ${env.ANSIBLE_DIR}/test-connectivity.yml ubuntu@${env.BASTION_IP}:~/ansible/
+                            scp -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ${env.ANSIBLE_DIR}/templates/* ubuntu@${env.BASTION_IP}:~/ansible/templates/
+                            
+                            # Copia deploy-docker.yml se existir
+                            scp -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ${env.ANSIBLE_DIR}/deploy-docker.yml ubuntu@${env.BASTION_IP}:~/ansible/ || echo "deploy-docker.yml não encontrado"
+                            
+                            # Configurar permissões
+                            ssh -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ubuntu@${env.BASTION_IP} 'chmod +x ~/ansible/*.sh 2>/dev/null || true'
                         """
                         
                         // Executa setup e testes no Bastion
@@ -186,25 +198,34 @@ pipeline {
                             ssh -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ubuntu@${env.BASTION_IP} << 'EOF'
                             cd ~/ansible
                             
-                            # Aguarda um pouco mais para as instâncias de aplicação ficarem prontas
+                            # Configura credenciais AWS no Bastion para inventário dinâmico
+                            export AWS_ACCESS_KEY_ID="\${AWS_ACCESS_KEY_ID}"
+                            export AWS_SECRET_ACCESS_KEY="\${AWS_SECRET_ACCESS_KEY}"
+                            export AWS_DEFAULT_REGION="us-east-1"
+                            
+                            # Aguarda instâncias de aplicação ficarem prontas
                             echo "⏳ Aguardando instâncias de aplicação..."
-                            sleep 60
+                            sleep 90
                             
-                            # Testa inventário
-                            echo "🔍 Testando inventário dinâmico..."
-                            ansible-inventory --list || echo "Inventário dinâmico falhou, usando fallback..."
+                            # Testa inventário dinâmico AWS
+                            echo "🔍 Testando inventário dinâmico AWS..."
+                            ansible-inventory -i aws_ec2.yml --list || echo "⚠️ Inventário dinâmico falhou"
+                            ansible-inventory -i aws_ec2.yml --graph || echo "⚠️ Graph do inventário falhou"
                             
-                            # Testa conectividade básica
-                            echo "🏓 Testando conectividade..."
-                            timeout 60 ansible all -m ping --ssh-common-args='-o ConnectTimeout=10 -o StrictHostKeyChecking=no' || echo "Alguns hosts podem não estar prontos ainda"
+                            # Testa conectividade com grupos dinâmicos
+                            echo "🏓 Testando conectividade com grupos dinâmicos..."
+                            ansible role_application -i aws_ec2.yml -m ping --ssh-common-args='-o ConnectTimeout=10 -o StrictHostKeyChecking=no' || \\
+                            ansible tier_application -i aws_ec2.yml -m ping --ssh-common-args='-o ConnectTimeout=10 -o StrictHostKeyChecking=no' || \\
+                            echo "⚠️ Conectividade inicial falhou, pode ser normal se instâncias ainda estão inicializando"
                             
-                            # Executa playbook de teste primeiro
-                            echo "🧪 Executando teste de conectividade..."
-                            ansible-playbook test-connectivity.yml --ssh-common-args='-o StrictHostKeyChecking=no' || echo "Teste de conectividade falhou"
+                            # Executa teste de conectividade detalhado
+                            echo "🧪 Executando teste de conectividade detalhado..."
+                            ansible-playbook test-connectivity.yml -i aws_ec2.yml --ssh-common-args='-o StrictHostKeyChecking=no' --limit 'role_application:tier_application' || \\
+                            echo "⚠️ Teste de conectividade falhou - continuando com deploy principal"
                             
-                            # Executa playbook principal de configuração do Nginx
-                            echo "🚀 Configurando Nginx nos servidores de aplicação..."
-                            ansible-playbook playbook-nginx.yml --ssh-common-args='-o StrictHostKeyChecking=no' -v
+                            # Executa playbook principal do Nginx usando inventário dinâmico
+                            echo "🚀 Configurando Nginx nos servidores de aplicação via inventário dinâmico..."
+                            ansible-playbook playbook-nginx.yml -i aws_ec2.yml --ssh-common-args='-o StrictHostKeyChecking=no' --limit 'role_application:tier_application' -v
 EOF
                         """
                     }
@@ -230,20 +251,34 @@ EOF
                     
                     while (retryCount < maxRetries && !healthy) {
                         try {
+                            // Primeiro testa o endpoint principal
                             def response = sh(
-                                script: "curl -s -o /dev/null -w '%{http_code}' http://${env.ALB_DNS}/health",
+                                script: "curl -s -o /dev/null -w '%{http_code}' http://${env.ALB_DNS}",
                                 returnStdout: true
                             ).trim()
                             
                             if (response == '200') {
-                                echo "✅ Aplicação está saudável!"
-                                healthy = true
+                                echo "✅ Aplicação principal está respondendo!"
+                                
+                                // Agora testa o health check endpoint
+                                def healthResponse = sh(
+                                    script: "curl -s -o /dev/null -w '%{http_code}' http://${env.ALB_DNS}/health",
+                                    returnStdout: true
+                                ).trim()
+                                
+                                if (healthResponse == '200') {
+                                    echo "✅ Health check endpoint está funcionando!"
+                                    healthy = true
+                                } else {
+                                    echo "⚠️ Página principal OK (${response}), mas health check falhou (${healthResponse})"
+                                }
                             } else {
-                                echo "⚠️ Tentativa ${retryCount + 1}/${maxRetries} - Status: ${response}"
+                                echo "⚠️ Tentativa ${retryCount + 1}/${maxRetries} - Status da aplicação: ${response}"
                                 sleep(time: 20, unit: "SECONDS")
                             }
                         } catch (Exception e) {
                             echo "⚠️ Erro no health check: ${e.message}"
+                            echo "🔍 Tentativa ${retryCount + 1}/${maxRetries}"
                             sleep(time: 20, unit: "SECONDS")
                         }
                         
@@ -281,12 +316,17 @@ EOF
             • URL da Aplicação: http://${env.ALB_DNS ?: 'N/A'}
             
             🔗 Links úteis:
+            • Aplicação: http://${env.ALB_DNS ?: 'N/A'}
             • Health Check: http://${env.ALB_DNS ?: 'N/A'}/health
-            • Status: http://${env.ALB_DNS ?: 'N/A'}/status
             • AWS Console: https://console.aws.amazon.com/
             
             🚀 Para acessar o Bastion:
             ssh -i ~/.ssh/aws-key ubuntu@${env.BASTION_IP ?: 'N/A'}
+            
+            🔧 Comandos úteis no Bastion:
+            • ansible-inventory -i aws_ec2.yml --list
+            • ansible role_application -i aws_ec2.yml -m ping
+            • ansible-playbook playbook-nginx.yml -i aws_ec2.yml --limit role_application
             """
         }
         
@@ -302,9 +342,10 @@ EOF
             5. Verifique a infraestrutura no AWS Console
             
             📋 Comandos úteis no Bastion:
-            • ansible-inventory --list
-            • ansible all -m ping
-            • ./test-connectivity.sh
+            • ansible-inventory -i aws_ec2.yml --list
+            • ansible role_application -i aws_ec2.yml -m ping
+            • ansible-playbook playbook-nginx.yml -i aws_ec2.yml --limit role_application
+            • ansible-playbook test-connectivity.yml -i aws_ec2.yml
             """
         }
     }

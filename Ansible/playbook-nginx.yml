@@ -4,12 +4,12 @@
   hosts: role_application, tier_application
   become: yes
   gather_facts: yes
-  
+
   vars:
     nginx_port: 80
     app_name: "DevOps-Project"
     environment: "{{ ansible_ec2_tag_Environment | default('prod') }}"
-    
+
   tasks:
     - name: Update system packages (Amazon Linux)
       yum:
@@ -17,26 +17,26 @@
         state: latest
         update_cache: yes
       when: ansible_distribution == 'Amazon'
-      
+
     - name: Update system packages (Ubuntu)
       apt:
         upgrade: dist
         update_cache: yes
         cache_valid_time: 3600
       when: ansible_distribution == 'Ubuntu'
-      
+
     - name: Install Nginx (Amazon Linux)
       yum:
         name: nginx
         state: present
       when: ansible_distribution == 'Amazon'
-      
+
     - name: Install Nginx (Ubuntu)
       apt:
         name: nginx
         state: present
       when: ansible_distribution == 'Ubuntu'
-      
+
     - name: Install additional packages
       package:
         name:
@@ -45,7 +45,7 @@
           - htop
           - git
         state: present
-        
+
     - name: Create web directory
       file:
         path: /var/www/html
@@ -53,7 +53,7 @@
         owner: nginx
         group: nginx
         mode: '0755'
-        
+
     - name: Generate custom index.html
       template:
         src: index.html.j2
@@ -62,7 +62,7 @@
         group: nginx
         mode: '0644'
       notify: restart nginx
-      
+
     - name: Configure Nginx
       template:
         src: nginx.conf.j2
@@ -72,7 +72,7 @@
         mode: '0644'
         backup: yes
       notify: restart nginx
-      
+
     - name: Create health check endpoint
       copy:
         content: |
@@ -87,7 +87,7 @@
         owner: nginx
         group: nginx
         mode: '0644'
-        
+
     - name: Configure firewall (Amazon Linux)
       firewalld:
         service: http
@@ -96,7 +96,7 @@
         immediate: yes
       when: ansible_distribution == 'Amazon'
       ignore_errors: yes
-      
+
     - name: Allow HTTP traffic (Ubuntu)
       ufw:
         rule: allow
@@ -104,21 +104,21 @@
         proto: tcp
       when: ansible_distribution == 'Ubuntu'
       ignore_errors: yes
-      
+
     - name: Start and enable Nginx
       systemd:
         name: nginx
         state: started
         enabled: yes
         daemon_reload: yes
-        
+
     - name: Wait for Nginx to be available
       wait_for:
         port: "{{ nginx_port }}"
         host: "{{ ansible_default_ipv4.address }}"
         delay: 5
         timeout: 30
-        
+
     - name: Test Nginx is serving content
       uri:
         url: "http://{{ ansible_default_ipv4.address }}:{{ nginx_port }}"
@@ -127,7 +127,7 @@
       register: nginx_test
       retries: 3
       delay: 5
-      
+
     - name: Test health endpoint
       uri:
         url: "http://{{ ansible_default_ipv4.address }}:{{ nginx_port }}/health"
@@ -136,26 +136,26 @@
       register: health_test
       retries: 3
       delay: 5
-      
+
     - name: Display success message
       debug:
         msg: |
           ✅ Nginx configurado com sucesso!
-          
+
           📊 Informações do servidor:
           • Hostname: {{ ansible_hostname }}
           • IP Privado: {{ ansible_default_ipv4.address }}
           • Distribuição: {{ ansible_distribution }} {{ ansible_distribution_version }}
           • Nginx Status: {{ 'Funcionando' if nginx_test.status == 200 else 'Erro' }}
           • Health Check: {{ 'OK' if health_test.status == 200 else 'Erro' }}
-          
+
   handlers:
     - name: restart nginx
       systemd:
         name: nginx
         state: restarted
         daemon_reload: yes
-        
+
     - name: reload nginx
       systemd:
         name: nginx
@@ -165,18 +165,18 @@
 - name: Final verification
   hosts: localhost
   gather_facts: no
-  
+
   tasks:
     - name: Show deployment summary
       debug:
         msg: |
           🎉 Configuração do Nginx concluída!
-          
+
           📋 Próximos passos:
           1. Verifique o ALB no AWS Console
           2. Teste a aplicação via Load Balancer
           3. Configure monitoramento se necessário
-          
+
           🔗 Para debugar:
           • SSH para o Bastion: ssh -i ~/.ssh/aws-key ubuntu@<bastion-ip>
           • Verificar logs: sudo tail -f /var/log/nginx/error.log
