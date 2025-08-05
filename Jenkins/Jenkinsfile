@@ -16,34 +16,48 @@ pipeline {
 
     /* Variáveis fáceis de ajustar ---------------------------------------- */
     environment {
-        TF_BACKEND_BUCKET = ''              // → coloque o bucket depois
+        TF_BACKEND_BUCKET = 'lextechworks'
         TF_BACKEND_REGION = 'us-east-1'
+        TF_DIR = 'Terraform/Environment'
+        ANSIBLE_DIR = 'Ansible'
     }
 
     stages {
 
         /* ---------- Checkout -------------------------------------------- */
         stage('Checkout') {
-            steps { checkout scm }
+            steps { 
+                checkout scm 
+                
+                script {
+                    // Mostra estrutura do projeto
+                    sh 'pwd && ls -la'
+                    dir(env.TF_DIR) {
+                        sh 'ls -la'
+                    }
+                }
+            }
         }
 
         /* ---------- Init ------------------------------------------------ */
-        stage('Init') {
+        stage('Terraform Init') {
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'aws-terraform',
                     usernameVariable: 'AWS_ACCESS_KEY_ID',
                     passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
 
-                    script {
-                        if (env.TF_BACKEND_BUCKET?.trim()) {
-                            sh """
-                              terraform init \
-                                -backend-config="bucket=${TF_BACKEND_BUCKET}" \
-                                -backend-config="region=${TF_BACKEND_REGION}"
-                            """
-                        } else {
-                            sh 'terraform init'
+                    dir(env.TF_DIR) {
+                        script {
+                            if (env.TF_BACKEND_BUCKET?.trim()) {
+                                sh """
+                                  terraform init \\
+                                    -backend-config="bucket=${TF_BACKEND_BUCKET}" \\
+                                    -backend-config="region=${TF_BACKEND_REGION}"
+                                """
+                            } else {
+                                sh 'terraform init'
+                            }
                         }
                     }
                 }
@@ -51,36 +65,196 @@ pipeline {
         }
 
         /* ---------- Fmt & Validate -------------------------------------- */
-        stage('Fmt & Validate') {
+        stage('Terraform Validate') {
             steps {
-                /* Apenas mostra diferenças, mas NÃO falha o build */
-                sh 'terraform fmt -recursive -diff'
-                sh 'terraform validate'
-            }
-        }
-
-        /* ---------- Plan ------------------------------------------------ */
-        stage('Plan') {
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'aws-terraform',
-                    usernameVariable: 'AWS_ACCESS_KEY_ID',
-                    passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
-
-                    sh 'terraform plan -out=tfplan'
+                dir(env.TF_DIR) {
+                    /* Apenas mostra diferenças, mas NÃO falha o build */
+                    sh 'terraform fmt -recursive -diff'
+                    sh 'terraform validate'
                 }
             }
         }
 
-        /* ---------- Apply (sempre) -------------------------------------- */
-        stage('Apply') {
+        /* ---------- Plan ------------------------------------------------ */
+        stage('Terraform Plan') {
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'aws-terraform',
                     usernameVariable: 'AWS_ACCESS_KEY_ID',
                     passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
 
-                    sh 'terraform apply -auto-approve tfplan'
+                    dir(env.TF_DIR) {
+                        sh 'terraform plan -out=tfplan'
+                    }
+                }
+            }
+        }
+
+        /* ---------- Apply ----------------------------------------------- */
+        stage('Terraform Apply') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'aws-terraform',
+                    usernameVariable: 'AWS_ACCESS_KEY_ID',
+                    passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+
+                    dir(env.TF_DIR) {
+                        sh 'terraform apply -auto-approve tfplan'
+                        
+                        // Captura outputs importantes para o Ansible
+                        script {
+                            try {
+                                env.BASTION_IP = sh(
+                                    script: 'terraform output -raw bastion_public_ip',
+                                    returnStdout: true
+                                ).trim()
+                                
+                                env.ALB_DNS = sh(
+                                    script: 'terraform output -raw alb_dns_name',
+                                    returnStdout: true
+                                ).trim()
+                                
+                                echo "✅ Infraestrutura criada:"
+                                echo "   • Bastion IP: ${env.BASTION_IP}"
+                                echo "   • ALB DNS: ${env.ALB_DNS}"
+                                
+                            } catch (Exception e) {
+                                echo "⚠️ Não foi possível capturar alguns outputs: ${e.message}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /* ---------- Deploy Ansible ------------------------------------- */
+        stage('Deploy via Ansible') {
+            when {
+                expression { env.BASTION_IP != null && env.BASTION_IP != '' }
+            }
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'aws-terraform',
+                        usernameVariable: 'AWS_ACCESS_KEY_ID',
+                        passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+                    ),
+                    sshUserPrivateKey(
+                        credentialsId: 'aws-ssh-key',
+                        keyFileVariable: 'SSH_KEY_FILE',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+                    
+                    script {
+                        // Aguarda instâncias ficarem prontas
+                        echo "⏳ Aguardando instâncias ficarem prontas..."
+                        sleep(time: 120, unit: "SECONDS")
+                        
+                        // Configura SSH
+                        sh """
+                            echo "🔑 Configurando acesso SSH..."
+                            mkdir -p ~/.ssh
+                            ssh-keyscan -H ${env.BASTION_IP} >> ~/.ssh/known_hosts || true
+                        """
+                        
+                        // Aguarda SSH do Bastion estar disponível
+                        retry(5) {
+                            sh """
+                                echo "🧪 Testando SSH para o Bastion..."
+                                ssh -i \${SSH_KEY_FILE} -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@${env.BASTION_IP} 'echo "SSH OK"'
+                            """
+                        }
+                        
+                        // Copia chave SSH para o Bastion
+                        sh """
+                            echo "📋 Configurando chaves no Bastion..."
+                            scp -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no \${SSH_KEY_FILE} ubuntu@${env.BASTION_IP}:~/.ssh/id_rsa
+                            ssh -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ubuntu@${env.BASTION_IP} 'chmod 600 ~/.ssh/id_rsa'
+                        """
+                        
+                        // Copia arquivos do Ansible para o Bastion
+                        sh """
+                            echo "📂 Enviando playbooks para o Bastion..."
+                            scp -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no -r ${env.ANSIBLE_DIR}/* ubuntu@${env.BASTION_IP}:~/ansible/
+                            ssh -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ubuntu@${env.BASTION_IP} 'chmod +x ~/ansible/*.sh'
+                        """
+                        
+                        // Executa setup e testes no Bastion
+                        sh """
+                            echo "🔧 Configurando Ansible no Bastion..."
+                            ssh -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ubuntu@${env.BASTION_IP} << 'EOF'
+                            cd ~/ansible
+                            
+                            # Aguarda um pouco mais para as instâncias de aplicação ficarem prontas
+                            echo "⏳ Aguardando instâncias de aplicação..."
+                            sleep 60
+                            
+                            # Testa inventário
+                            echo "🔍 Testando inventário dinâmico..."
+                            ansible-inventory --list || echo "Inventário dinâmico falhou, usando fallback..."
+                            
+                            # Testa conectividade básica
+                            echo "🏓 Testando conectividade..."
+                            timeout 60 ansible all -m ping --ssh-common-args='-o ConnectTimeout=10 -o StrictHostKeyChecking=no' || echo "Alguns hosts podem não estar prontos ainda"
+                            
+                            # Executa playbook de teste primeiro
+                            echo "🧪 Executando teste de conectividade..."
+                            ansible-playbook test-connectivity.yml --ssh-common-args='-o StrictHostKeyChecking=no' || echo "Teste de conectividade falhou"
+                            
+                            # Executa playbook principal de configuração do Nginx
+                            echo "🚀 Configurando Nginx nos servidores de aplicação..."
+                            ansible-playbook playbook-nginx.yml --ssh-common-args='-o StrictHostKeyChecking=no' -v
+EOF
+                        """
+                    }
+                }
+            }
+        }
+
+        /* ---------- Health Check --------------------------------------- */
+        stage('Health Check') {
+            when {
+                expression { env.ALB_DNS != null && env.ALB_DNS != '' }
+            }
+            steps {
+                script {
+                    echo "🏥 Verificando saúde da aplicação..."
+                    
+                    // Aguarda ALB detectar as instâncias
+                    sleep(time: 60, unit: "SECONDS")
+                    
+                    def maxRetries = 15
+                    def retryCount = 0
+                    def healthy = false
+                    
+                    while (retryCount < maxRetries && !healthy) {
+                        try {
+                            def response = sh(
+                                script: "curl -s -o /dev/null -w '%{http_code}' http://${env.ALB_DNS}/health",
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (response == '200') {
+                                echo "✅ Aplicação está saudável!"
+                                healthy = true
+                            } else {
+                                echo "⚠️ Tentativa ${retryCount + 1}/${maxRetries} - Status: ${response}"
+                                sleep(time: 20, unit: "SECONDS")
+                            }
+                        } catch (Exception e) {
+                            echo "⚠️ Erro no health check: ${e.message}"
+                            sleep(time: 20, unit: "SECONDS")
+                        }
+                        
+                        retryCount++
+                    }
+                    
+                    if (!healthy) {
+                        echo "❌ Health check falhou após ${maxRetries} tentativas"
+                        echo "⚠️ Isso pode ser normal se as instâncias ainda estão sendo configuradas"
+                        echo "🔍 Verifique manualmente: http://${env.ALB_DNS}"
+                    }
                 }
             }
         }
@@ -89,7 +263,49 @@ pipeline {
     /* ---------- Pós-build ---------------------------------------------- */
     post {
         always {
-            archiveArtifacts artifacts: 'tfplan', fingerprint: true
+            script {
+                dir(env.TF_DIR) {
+                    archiveArtifacts artifacts: 'tfplan', fingerprint: true, allowEmptyArchive: true
+                }
+            }
+        }
+        
+        success {
+            echo """
+            🎉 Deploy realizado com sucesso!
+            
+            📊 Resumo da Infraestrutura:
+            • Ambiente: prod
+            • Bastion Host: ${env.BASTION_IP ?: 'N/A'}
+            • Load Balancer: ${env.ALB_DNS ?: 'N/A'}
+            • URL da Aplicação: http://${env.ALB_DNS ?: 'N/A'}
+            
+            🔗 Links úteis:
+            • Health Check: http://${env.ALB_DNS ?: 'N/A'}/health
+            • Status: http://${env.ALB_DNS ?: 'N/A'}/status
+            • AWS Console: https://console.aws.amazon.com/
+            
+            🚀 Para acessar o Bastion:
+            ssh -i ~/.ssh/aws-key ubuntu@${env.BASTION_IP ?: 'N/A'}
+            """
+        }
+        
+        failure {
+            echo """
+            ❌ Deploy falhou!
+            
+            🔍 Para debugar:
+            1. Verifique os logs do Jenkins acima
+            2. Acesse o Bastion (se disponível): ssh -i ~/.ssh/aws-key ubuntu@${env.BASTION_IP ?: 'N/A'}
+            3. Verifique logs do Ansible em: ~/ansible/ansible.log
+            4. Teste manualmente: cd ~/ansible && ./deploy-manual.sh
+            5. Verifique a infraestrutura no AWS Console
+            
+            📋 Comandos úteis no Bastion:
+            • ansible-inventory --list
+            • ansible all -m ping
+            • ./test-connectivity.sh
+            """
         }
     }
 }

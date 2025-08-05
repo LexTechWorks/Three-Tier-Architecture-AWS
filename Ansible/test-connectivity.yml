@@ -1,0 +1,139 @@
+---
+# Playbook para testar conectividade via Jump Host
+- name: Test Connectivity via Jump Host
+  hosts: all
+  gather_facts: yes
+  
+  tasks:
+    - name: Test basic connectivity
+      ping:
+      register: ping_result
+      
+    - name: Show host information
+      debug:
+        msg: |
+          Host: {{ inventory_hostname }}
+          IP: {{ ansible_host }}
+          User: {{ ansible_user }}
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Uptime: {{ ansible_uptime_seconds | int // 3600 }}h {{ (ansible_uptime_seconds | int % 3600) // 60 }}m
+          
+    - name: Test internet connectivity
+      uri:
+        url: https://httpbin.org/ip
+        method: GET
+        timeout: 10
+      register: internet_test
+      ignore_errors: yes
+      
+    - name: Show internet test result
+      debug:
+        msg: |
+          Internet access: {{ 'OK' if internet_test.status == 200 else 'FAILED' }}
+          Public IP: {{ internet_test.json.origin if internet_test.status == 200 else 'N/A' }}
+      when: internet_test is defined
+      
+    - name: Check if Docker is installed
+      command: docker --version
+      register: docker_check
+      ignore_errors: yes
+      changed_when: false
+      
+    - name: Show Docker status
+      debug:
+        msg: |
+          Docker: {{ 'Installed' if docker_check.rc == 0 else 'Not installed' }}
+          Version: {{ docker_check.stdout if docker_check.rc == 0 else 'N/A' }}
+          
+    - name: Test SSH agent forwarding
+      command: ssh-add -l
+      register: ssh_agent
+      ignore_errors: yes
+      changed_when: false
+      
+    - name: Show SSH agent status
+      debug:
+        msg: |
+          SSH Agent: {{ 'Active' if ssh_agent.rc == 0 else 'No keys loaded' }}
+          Keys: {{ ssh_agent.stdout_lines | length if ssh_agent.rc == 0 else 0 }}
+
+# Tarefa específica para Bastion
+- name: Test Bastion specific functions
+  hosts: role_bastion
+  gather_facts: no
+  
+  tasks:
+    - name: Check if Ansible is installed on Bastion
+      command: ansible --version
+      register: ansible_version
+      ignore_errors: yes
+      changed_when: false
+      
+    - name: Show Ansible status on Bastion
+      debug:
+        msg: |
+          Ansible on Bastion: {{ 'Installed' if ansible_version.rc == 0 else 'Not installed' }}
+          Version: {{ ansible_version.stdout_lines[0] if ansible_version.rc == 0 else 'N/A' }}
+          
+    - name: Test AWS CLI on Bastion
+      command: aws sts get-caller-identity
+      register: aws_test
+      ignore_errors: yes
+      changed_when: false
+      
+    - name: Show AWS CLI status
+      debug:
+        msg: |
+          AWS CLI: {{ 'Configured' if aws_test.rc == 0 else 'Not configured' }}
+          Account: {{ (aws_test.stdout | from_json).Account if aws_test.rc == 0 else 'N/A' }}
+
+# Tarefa específica para instâncias de aplicação
+- name: Test Application servers
+  hosts: role_application, tier_application
+  gather_facts: no
+  
+  tasks:
+    - name: Check if port 80 is available
+      wait_for:
+        port: 80
+        host: "{{ ansible_default_ipv4.address }}"
+        timeout: 5
+      register: port_check
+      ignore_errors: yes
+      
+    - name: Show port 80 status
+      debug:
+        msg: |
+          Port 80: {{ 'Open' if port_check is succeeded else 'Closed' }}
+          Ready for web server: {{ 'Yes' if port_check is succeeded else 'No' }}
+          
+    - name: Check available disk space
+      command: df -h /
+      register: disk_space
+      changed_when: false
+      
+    - name: Show disk space
+      debug:
+        msg: |
+          Disk usage: {{ disk_space.stdout_lines[1] }}
+
+# Resumo final
+- name: Connection Summary
+  hosts: localhost
+  gather_facts: no
+  
+  tasks:
+    - name: Show summary
+      debug:
+        msg: |
+          🎉 Connectivity Test Complete!
+          
+          📊 Results:
+          • Total hosts tested: {{ groups['all'] | length }}
+          • Bastion hosts: {{ groups['role_bastion'] | default([]) | length }}
+          • Application hosts: {{ groups['role_application'] | default([]) | length }}
+          
+          🔧 Next steps:
+          1. If all hosts are reachable, you can proceed with deployment
+          2. If some hosts failed, check SSH keys and security groups
+          3. Use 'ansible-inventory --list' to verify host discovery

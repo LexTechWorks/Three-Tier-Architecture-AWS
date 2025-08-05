@@ -57,32 +57,36 @@ resource "aws_key_pair" "key" {
 }
 
 module "bastion" {
-  source              = "../Modules/Bastiao"
-  bastion_ami_id      = var.bastion_ami_id
+  source                = "../Modules/Bastiao"
+  bastion_ami_id        = var.bastion_ami_id
   bastion_instance_type = var.bastion_instance_type
-  key_name            = aws_key_pair.key.key_name
-  subnet_id           = module.vpc.bastion_subnet_id
-  security_group_id   = module.vpc.bastion_security_group_id
-  environment         = var.environment
-  user_data_script    = "${path.module}/scripts/bastion_setup.sh"
+  key_name              = aws_key_pair.key.key_name
+  subnet_id             = module.vpc.bastion_subnet_id
+  security_group_id     = module.vpc.bastion_security_group_id
+  environment           = var.environment
+  user_data_script      = "${path.module}/scripts/bastion_setup.sh"
 }
 
 module "app_asg" {
-  source                   = "../Modules/ASG"
-  name_prefix              = "app"
-  environment              = var.environment
-  ami_id                   = var.app_ami_id
-  instance_type            = var.app_instance_type
-  key_name                 = aws_key_pair.key.key_name
-  security_group_id        = module.vpc.app_security_group_id
-  subnet_ids               = module.vpc.private_app_subnet_ids
-  min_size                 = var.app_min_size
-  max_size                 = var.app_max_size
-  desired_capacity         = var.app_desired_capacity
-  target_group_arn         = module.alb.target_group_arn
-  root_volume_size         = 10
+  source            = "../Modules/ASG"
+  name_prefix       = "app"
+  environment       = var.environment
+  ami_id            = var.app_ami_id
+  instance_type     = var.app_instance_type
+  key_name          = aws_key_pair.key.key_name
+  security_group_id = module.vpc.app_security_group_id
+  subnet_ids        = module.vpc.private_app_subnet_ids
+  min_size          = var.app_min_size
+  max_size          = var.app_max_size
+  desired_capacity  = var.app_desired_capacity
+  target_group_arn  = module.alb.target_group_arn
+  root_volume_size  = 10
   tags = {
-    Type = "application"
+    Type              = "application"
+    Role              = "application"
+    Tier              = "application"
+    Project           = "ansible-integration"
+    AnsibleManaged    = "true"
   }
 }
 

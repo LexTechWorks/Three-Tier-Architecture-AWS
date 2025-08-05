@@ -1,0 +1,286 @@
+pipeline {
+    agent any
+
+    options {
+        ansiColor('xterm')
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        disableConcurrentBuilds()
+        skipDefaultCheckout(true)
+    }
+
+    tools { 
+        terraform 'terraform' 
+    }
+
+    environment {
+        // Configurações AWS
+        TF_BACKEND_BUCKET = ''
+        TF_BACKEND_REGION = 'us-east-1'
+        
+        // Configurações Docker
+        DOCKER_IMAGE = 'sua-conta/nginx-app'  // Substitua pela sua imagem
+        DOCKER_TAG = "${env.BUILD_NUMBER}"
+        ECR_REGISTRY = 'sua-conta-aws.dkr.ecr.us-east-1.amazonaws.com'  // Se usar ECR
+    }
+
+    stages {
+
+        /* ---------- Checkout -------------------------------------------- */
+        stage('Checkout') {
+            steps { 
+                checkout scm 
+                
+                // Navega para o diretório do Terraform
+                script {
+                    dir('Terraform/Environment') {
+                        sh 'pwd && ls -la'
+                    }
+                }
+            }
+        }
+
+        /* ---------- Build Docker Image ---------------------------------- */
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    // Build da sua imagem customizada (se necessário)
+                    // sh "docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} ."
+                    // sh "docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest"
+                    
+                    echo "Docker image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                }
+            }
+        }
+
+        /* ---------- Push to Registry ----------------------------------- */
+        stage('Push to Registry') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-registry',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS')]) {
+                    
+                    script {
+                        // Para Docker Hub
+                        // sh "echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin"
+                        // sh "docker push ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                        // sh "docker push ${DOCKER_IMAGE}:latest"
+                        
+                        // Para ECR
+                        // sh "aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${ECR_REGISTRY}"
+                        // sh "docker push ${ECR_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG}"
+                        
+                        echo "Image pushed to registry"
+                    }
+                }
+            }
+        }
+
+        /* ---------- Terraform Init ------------------------------------ */
+        stage('Terraform Init') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'aws-terraform',
+                    usernameVariable: 'AWS_ACCESS_KEY_ID',
+                    passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+
+                    dir('Terraform/Environment') {
+                        script {
+                            if (env.TF_BACKEND_BUCKET?.trim()) {
+                                sh """
+                                  terraform init \\
+                                    -backend-config="bucket=\${TF_BACKEND_BUCKET}" \\
+                                    -backend-config="region=\${TF_BACKEND_REGION}"
+                                """
+                            } else {
+                                sh 'terraform init'
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /* ---------- Terraform Plan & Apply ---------------------------- */
+        stage('Terraform Plan & Apply') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'aws-terraform',
+                    usernameVariable: 'AWS_ACCESS_KEY_ID',
+                    passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+
+                    dir('Terraform/Environment') {
+                        sh 'terraform fmt -recursive -diff'
+                        sh 'terraform validate'
+                        sh 'terraform plan -out=tfplan'
+                        sh 'terraform apply -auto-approve tfplan'
+                        
+                        // Captura outputs importantes
+                        script {
+                            env.BASTION_IP = sh(
+                                script: 'terraform output -raw bastion_public_ip || echo "N/A"',
+                                returnStdout: true
+                            ).trim()
+                            
+                            env.ALB_DNS = sh(
+                                script: 'terraform output -raw alb_dns_name || echo "N/A"',
+                                returnStdout: true
+                            ).trim()
+                        }
+                        
+                        echo "Bastion IP: ${env.BASTION_IP}"
+                        echo "ALB DNS: ${env.ALB_DNS}"
+                    }
+                }
+            }
+        }
+
+        /* ---------- Deploy via Ansible -------------------------------- */
+        stage('Deploy Application') {
+            when {
+                expression { env.BASTION_IP != 'N/A' }
+            }
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'aws-terraform',
+                        usernameVariable: 'AWS_ACCESS_KEY_ID',
+                        passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+                    ),
+                    sshUserPrivateKey(
+                        credentialsId: 'aws-ssh-key',
+                        keyFileVariable: 'SSH_KEY_FILE',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+                    
+                    dir('Ansible') {
+                        script {
+                            // Aguarda instâncias ficarem prontas
+                            echo "⏳ Aguardando instâncias ficarem prontas..."
+                            sleep(time: 90, unit: "SECONDS")
+                            
+                            // Copia chave SSH para o Bastion
+                            sh """
+                                echo "🔑 Configurando acesso SSH..."
+                                ssh-keyscan -H ${env.BASTION_IP} >> ~/.ssh/known_hosts
+                                scp -i \${SSH_KEY_FILE} \${SSH_KEY_FILE} ubuntu@${env.BASTION_IP}:~/.ssh/id_rsa
+                                ssh -i \${SSH_KEY_FILE} ubuntu@${env.BASTION_IP} 'chmod 600 ~/.ssh/id_rsa'
+                            """
+                            
+                            // Copia arquivos do Ansible para o Bastion
+                            sh """
+                                echo "📋 Enviando playbooks para o Bastion..."
+                                scp -i \${SSH_KEY_FILE} -r . ubuntu@${env.BASTION_IP}:~/ansible/
+                            """
+                            
+                            // Executa Ansible no Bastion
+                            sh """
+                                echo "🚀 Executando deployment..."
+                                ssh -i \${SSH_KEY_FILE} ubuntu@${env.BASTION_IP} << 'EOF'
+                                cd ~/ansible
+                                
+                                # Testa inventário
+                                ansible-inventory --list
+                                
+                                # Testa conectividade
+                                ansible all -m ping --ssh-common-args='-o StrictHostKeyChecking=no'
+                                
+                                # Executa playbook de deploy
+                                ansible-playbook deploy-docker.yml \\
+                                    --extra-vars "docker_image=${DOCKER_IMAGE} docker_tag=${DOCKER_TAG}" \\
+                                    --ssh-common-args='-o StrictHostKeyChecking=no' \\
+                                    -v
+EOF
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        /* ---------- Health Check ------------------------------------- */
+        stage('Health Check') {
+            when {
+                expression { env.ALB_DNS != 'N/A' }
+            }
+            steps {
+                script {
+                    echo "🏥 Verificando saúde da aplicação..."
+                    
+                    // Aguarda um pouco para o ALB detectar as instâncias
+                    sleep(time: 30, unit: "SECONDS")
+                    
+                    def healthCheckUrl = "http://${env.ALB_DNS}/health"
+                    def maxRetries = 10
+                    def retryCount = 0
+                    def healthy = false
+                    
+                    while (retryCount < maxRetries && !healthy) {
+                        try {
+                            def response = sh(
+                                script: "curl -s -o /dev/null -w '%{http_code}' ${healthCheckUrl}",
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (response == '200') {
+                                echo "✅ Aplicação está saudável!"
+                                healthy = true
+                            } else {
+                                echo "⚠️ Tentativa ${retryCount + 1}/${maxRetries} - Status: ${response}"
+                                sleep(time: 15, unit: "SECONDS")
+                            }
+                        } catch (Exception e) {
+                            echo "⚠️ Erro no health check: ${e.message}"
+                            sleep(time: 15, unit: "SECONDS")
+                        }
+                        
+                        retryCount++
+                    }
+                    
+                    if (!healthy) {
+                        error("❌ Health check falhou após ${maxRetries} tentativas")
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Arquiva artifacts importantes
+            archiveArtifacts artifacts: 'Terraform/Environment/tfplan', fingerprint: true, allowEmptyArchive: true
+            
+            // Limpeza
+            sh 'docker system prune -f || true'
+        }
+        
+        success {
+            echo """
+            🎉 Deploy realizado com sucesso!
+            
+            📊 Informações do Deploy:
+            • Imagem Docker: ${DOCKER_IMAGE}:${DOCKER_TAG}
+            • Bastion IP: ${env.BASTION_IP}
+            • Load Balancer: ${env.ALB_DNS}
+            • URL da Aplicação: http://${env.ALB_DNS}
+            
+            🔗 Links úteis:
+            • Health Check: http://${env.ALB_DNS}/health
+            • AWS Console: https://console.aws.amazon.com/
+            """
+        }
+        
+        failure {
+            echo """
+            ❌ Deploy falhou!
+            
+            🔍 Para debugar:
+            1. Verifique os logs do Jenkins
+            2. Acesse o Bastion: ssh -i ~/.ssh/aws-key ubuntu@${env.BASTION_IP}
+            3. Verifique logs do Ansible: ~/ansible/
+            """
+        }
+    }
+}

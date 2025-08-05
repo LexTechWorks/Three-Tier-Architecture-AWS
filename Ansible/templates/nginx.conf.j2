@@ -1,0 +1,163 @@
+# Configuração do Nginx otimizada para ambiente de produção
+# Gerado via Ansible para instâncias de aplicação
+
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /run/nginx.pid;
+
+# Load dynamic modules
+include /usr/share/nginx/modules/*.conf;
+
+events {
+    worker_connections 1024;
+    use epoll;
+    multi_accept on;
+}
+
+http {
+    # Logs
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+                    
+    log_format detailed '$remote_addr - $remote_user [$time_local] '
+                       '"$request" $status $bytes_sent '
+                       '"$http_referer" "$http_user_agent" '
+                       '$request_time $upstream_response_time';
+
+    access_log /var/log/nginx/access.log main;
+
+    # Basic Settings
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    server_tokens off;
+    
+    # File types
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    # Gzip Settings
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types
+        text/plain
+        text/css
+        text/xml
+        text/javascript
+        application/json
+        application/javascript
+        application/xml+rss
+        application/atom+xml
+        image/svg+xml;
+
+    # Security Headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer-when-downgrade" always;
+    add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
+
+    # Rate limiting
+    limit_req_zone $binary_remote_addr zone=main:10m rate=10r/s;
+    limit_req_status 429;
+
+    # Upstream para Load Balancer Health Checks
+    upstream backend {
+        server 127.0.0.1:80;
+        keepalive 32;
+    }
+
+    # Servidor principal
+    server {
+        listen 80 default_server;
+        listen [::]:80 default_server;
+        server_name _;
+        root /var/www/html;
+        index index.html index.htm;
+
+        # Security
+        server_tokens off;
+        
+        # Rate limiting
+        limit_req zone=main burst=20 nodelay;
+
+        # Health check endpoint para ALB
+        location /health {
+            access_log off;
+            return 200 '{"status":"healthy","server":"{{ ansible_hostname }}","environment":"{{ environment | default("prod") }}","timestamp":"$time_iso8601"}';
+            add_header Content-Type application/json;
+            add_header Cache-Control "no-cache, no-store, must-revalidate";
+        }
+
+        # Status endpoint detalhado
+        location /status {
+            access_log off;
+            return 200 '{"status":"ok","server":"{{ ansible_hostname }}","ip":"{{ ansible_default_ipv4.address }}","zone":"{{ ansible_ec2_placement_availability_zone | default("unknown") }}","instance_type":"{{ ansible_ec2_instance_type | default("unknown") }}","uptime":"{{ ansible_uptime_seconds | default(0) }}","timestamp":"$time_iso8601"}';
+            add_header Content-Type application/json;
+        }
+
+        # Métricas básicas para monitoramento
+        location /metrics {
+            access_log off;
+            stub_status on;
+            allow 10.0.0.0/8;  # Permite apenas tráfego interno da VPC
+            deny all;
+        }
+
+        # Arquivos estáticos com cache
+        location ~* \.(jpg|jpeg|png|gif|ico|css|js|pdf|txt)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+            access_log off;
+        }
+
+        # Página principal
+        location / {
+            try_files $uri $uri/ =404;
+            
+            # Headers adicionais para debugging
+            add_header X-Server-Name "{{ ansible_hostname }}" always;
+            add_header X-Server-IP "{{ ansible_default_ipv4.address }}" always;
+            add_header X-Environment "{{ environment | default('prod') }}" always;
+        }
+
+        # Logs personalizados
+        access_log /var/log/nginx/{{ ansible_hostname }}.access.log detailed;
+        error_log /var/log/nginx/{{ ansible_hostname }}.error.log warn;
+
+        # Security: Hide sensitive files
+        location ~ /\. {
+            deny all;
+            access_log off;
+            log_not_found off;
+        }
+
+        location ~ ~$ {
+            deny all;
+            access_log off;
+            log_not_found off;
+        }
+
+        # Error pages
+        error_page 404 /404.html;
+        error_page 500 502 503 504 /50x.html;
+        
+        location = /50x.html {
+            root /usr/share/nginx/html;
+        }
+    }
+
+    # Server block para redirecionar requisições HTTP (se necessário HTTPS)
+    # Descomente se configurar SSL/TLS
+    # server {
+    #     listen 80;
+    #     server_name your-domain.com www.your-domain.com;
+    #     return 301 https://$server_name$request_uri;
+    # }
+}

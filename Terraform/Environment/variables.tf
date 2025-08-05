@@ -99,3 +99,24 @@ variable "domain_name" {
   description = "Nome do domínio para o Route53"
   type        = string
 }
+
+# Variáveis RDS (Opcionais)
+variable "db_name" {
+  description = "Nome do banco de dados"
+  type        = string
+  default     = "appdb"
+}
+
+variable "db_username" {
+  description = "Username para o banco de dados"
+  type        = string
+  default     = "admin"
+  sensitive   = true
+}
+
+variable "db_password" {
+  description = "Senha para o banco de dados"
+  type        = string
+  default     = ""
+  sensitive   = true
+}

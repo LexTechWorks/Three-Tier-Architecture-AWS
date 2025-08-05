@@ -1,0 +1,77 @@
+# Inventário Dinâmico AWS EC2 - Configurado para Jump Host via Bastion
+plugin: amazon.aws.aws_ec2
+
+# Regiões para buscar instâncias
+regions:
+  - us-east-1
+
+# Filtros para encontrar apenas nossas instâncias
+filters:
+  tag:Environment: prod              # Ambiente de produção
+  instance-state-name: running       # Apenas instâncias rodando
+  
+# Criação de grupos baseados em tags
+keyed_groups:
+  # Grupo por ambiente (env_prod)
+  - key: tags.Environment
+    prefix: env
+    
+  # Grupo por tipo/role (role_application, role_bastion)
+  - key: tags.Type
+    prefix: role
+    
+  # Grupo por tier (tier_application)
+  - key: tags.Tier
+    prefix: tier
+    
+  # Grupo por zona de disponibilidade
+  - key: placement.availability_zone
+    prefix: az
+
+# Como o Ansible vai identificar os hosts
+hostnames:
+  - private-ip-address    # Usa IP privado como hostname
+  - tag:Name             # Fallback para tag Name
+
+# Variáveis computadas para cada host
+compose:
+  # IP que o Ansible vai usar para conectar
+  ansible_host: private_ip_address
+  
+  # Usuário SSH baseado na AMI
+  ansible_user: |
+    {%- if 'ubuntu' in (tags.AMI | default('')) -%}
+    ubuntu
+    {%- elif 'amazon' in (tags.AMI | default('')) or 'amzn' in (image_id | default('')) -%}
+    ec2-user
+    {%- else -%}
+    ec2-user
+    {%- endif -%}
+  
+  # Configurações SSH para usar Bastion como Jump Host
+  ansible_ssh_common_args: |
+    {%- if 'bastion' not in (tags.Type | default('')) -%}
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -W %h:%p -q ubuntu@{{ hostvars['bastion_host']['ansible_host'] }}"
+    {%- else -%}
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+    {%- endif -%}
+  
+  # Porta SSH
+  ansible_port: 22
+  
+  # Chave SSH
+  ansible_ssh_private_key_file: ~/.ssh/id_rsa
+  
+  # Variáveis customizadas baseadas em tags
+  server_environment: tags.Environment | default('unknown')
+  server_type: tags.Type | default('unknown')
+  server_tier: tags.Tier | default('unknown')
+  
+# Cache para melhorar performance
+cache: true
+cache_plugin: memory
+cache_timeout: 300
+cache_connection: /tmp/ansible-aws-ec2-cache
+
+# Comportamento estrito de hostnames
+strict: false

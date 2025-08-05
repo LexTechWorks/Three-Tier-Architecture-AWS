@@ -1,0 +1,146 @@
+---
+# Playbook para deploy de containers Docker nas instâncias de aplicação
+- name: Deploy Docker Container to Application Servers
+  hosts: tier_application  # Baseado nas tags do EC2
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    docker_image: "{{ docker_image | default('nginx:latest') }}"
+    docker_tag: "{{ docker_tag | default('latest') }}"
+    container_name: "nginx-app"
+    container_port: 80
+    host_port: 80
+    
+  tasks:
+    - name: Update system packages
+      yum:
+        name: '*'
+        state: latest
+        update_cache: yes
+      when: ansible_distribution == 'Amazon'
+      
+    - name: Install Docker
+      yum:
+        name:
+          - docker
+          - git
+        state: present
+      when: ansible_distribution == 'Amazon'
+      
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+        
+    - name: Add ec2-user to docker group
+      user:
+        name: ec2-user
+        groups: docker
+        append: yes
+        
+    - name: Install Docker Compose
+      pip:
+        name: docker-compose
+        executable: pip3
+        
+    - name: Login to Docker registry (if needed)
+      docker_login:
+        registry: "{{ docker_registry | default('') }}"
+        username: "{{ docker_username | default('') }}"
+        password: "{{ docker_password | default('') }}"
+      when: docker_registry is defined
+      no_log: true
+      
+    - name: Pull Docker image
+      docker_image:
+        name: "{{ docker_image }}"
+        tag: "{{ docker_tag }}"
+        source: pull
+        force_source: yes
+      register: pull_result
+      
+    - name: Stop existing container
+      docker_container:
+        name: "{{ container_name }}"
+        state: stopped
+      ignore_errors: yes
+      
+    - name: Remove existing container
+      docker_container:
+        name: "{{ container_name }}"
+        state: absent
+      ignore_errors: yes
+      
+    - name: Run new container
+      docker_container:
+        name: "{{ container_name }}"
+        image: "{{ docker_image }}:{{ docker_tag }}"
+        state: started
+        restart_policy: always
+        ports:
+          - "{{ host_port }}:{{ container_port }}"
+        env:
+          ENVIRONMENT: "{{ ansible_ec2_tag_Environment | default('prod') }}"
+          SERVER_NAME: "{{ ansible_hostname }}"
+        volumes:
+          - /var/log/nginx:/var/log/nginx
+        healthcheck:
+          test: ["CMD", "curl", "-f", "http://localhost:{{ container_port }}/health"]
+          interval: 30s
+          timeout: 10s
+          retries: 3
+          start_period: 40s
+      register: container_result
+      
+    - name: Wait for container to be healthy
+      wait_for:
+        port: "{{ host_port }}"
+        host: "{{ ansible_default_ipv4.address }}"
+        delay: 10
+        timeout: 60
+        
+    - name: Verify container is running
+      docker_container_info:
+        name: "{{ container_name }}"
+      register: container_info
+      
+    - name: Display container status
+      debug:
+        msg: |
+          Container Status: {{ container_info.container.State.Status }}
+          Container Health: {{ container_info.container.State.Health.Status | default('N/A') }}
+          Image: {{ container_info.container.Config.Image }}
+          Ports: {{ container_info.container.NetworkSettings.Ports }}
+          
+    - name: Test HTTP response
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}:{{ host_port }}"
+        method: GET
+        status_code: 200
+      retries: 3
+      delay: 5
+      register: http_test
+      
+    - name: Test health endpoint
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}:{{ host_port }}/health"
+        method: GET
+        status_code: 200
+      retries: 3
+      delay: 5
+      ignore_errors: yes
+      
+    - name: Clean up old Docker images
+      docker_prune:
+        images: yes
+        images_filters:
+          dangling: false
+        containers: yes
+        
+  handlers:
+    - name: restart docker
+      systemd:
+        name: docker
+        state: restarted
