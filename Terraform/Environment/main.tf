@@ -40,9 +40,10 @@ module "vpc" {
 module "alb" {
   source            = "../Modules/LB"
   vpc_id            = module.vpc.vpc_id
-  subnet_ids        = module.vpc.private_app_subnet_ids
+  subnet_ids        = module.vpc.public_subnet_ids
   security_group_id = module.vpc.alb_security_group_id
   certificate_arn   = var.certificate_arn
+  environment       = var.environment
 }
 
 # Chave SSH para acesso às instâncias

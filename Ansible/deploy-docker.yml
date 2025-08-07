@@ -1,32 +1,55 @@
 ---
 # Playbook para deploy de containers Docker nas instâncias de aplicação
 - name: Deploy Docker Container to Application Servers
-  hosts: tier_application  # Baseado nas tags do EC2
+  hosts: role_application, tier_application  # Baseado nas tags do EC2
   become: yes
   gather_facts: yes
   
   vars:
-    docker_image: "{{ docker_image | default('nginx:latest') }}"
+    # Configuração para sua imagem no ECR
+    aws_account_id: "833371734412"
+    aws_region: "us-east-1"
+    ecr_repository: "nginx-lextechworks"  # Ajuste para o nome do seu repositório
+    docker_image: "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com/{{ ecr_repository }}"
     docker_tag: "{{ docker_tag | default('latest') }}"
-    container_name: "nginx-app"
+    container_name: "nginx-lextechworks"
     container_port: 80
     host_port: 80
     
   tasks:
-    - name: Update system packages
+    - name: Update system packages (Amazon Linux)
       yum:
         name: '*'
         state: latest
         update_cache: yes
       when: ansible_distribution == 'Amazon'
       
-    - name: Install Docker
+    - name: Update system packages (Ubuntu)
+      apt:
+        upgrade: dist
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_distribution == 'Ubuntu'
+      
+    - name: Install Docker (Amazon Linux)
       yum:
         name:
           - docker
           - git
+          - awscli
         state: present
       when: ansible_distribution == 'Amazon'
+      
+    - name: Install Docker (Ubuntu)
+      apt:
+        name:
+          - docker.io
+          - git
+          - awscli
+          - python3-pip
+          - python3-docker
+        state: present
+      when: ansible_distribution == 'Ubuntu'
       
     - name: Start and enable Docker service
       systemd:
@@ -34,24 +57,43 @@
         state: started
         enabled: yes
         
-    - name: Add ec2-user to docker group
+    - name: Add ubuntu user to docker group (Ubuntu)
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+      when: ansible_distribution == 'Ubuntu'
+        
+    - name: Add ec2-user to docker group (Amazon Linux)
       user:
         name: ec2-user
         groups: docker
         append: yes
+      when: ansible_distribution == 'Amazon'
         
-    - name: Install Docker Compose
+    - name: Install Docker Python library
       pip:
-        name: docker-compose
+        name: 
+          - docker
+          - docker-compose
         executable: pip3
         
-    - name: Login to Docker registry (if needed)
-      docker_login:
-        registry: "{{ docker_registry | default('') }}"
-        username: "{{ docker_username | default('') }}"
-        password: "{{ docker_password | default('') }}"
-      when: docker_registry is defined
+    - name: Configure AWS credentials for ECR access
+      shell: |
+        export AWS_ACCESS_KEY_ID="{{ ansible_env.AWS_ACCESS_KEY_ID }}"
+        export AWS_SECRET_ACCESS_KEY="{{ ansible_env.AWS_SECRET_ACCESS_KEY }}"
+        export AWS_DEFAULT_REGION="{{ aws_region }}"
       no_log: true
+        
+    - name: Login to ECR
+      shell: |
+        aws ecr get-login-password --region {{ aws_region }} | docker login --username AWS --password-stdin {{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com
+      environment:
+        AWS_ACCESS_KEY_ID: "{{ ansible_env.AWS_ACCESS_KEY_ID }}"
+        AWS_SECRET_ACCESS_KEY: "{{ ansible_env.AWS_SECRET_ACCESS_KEY }}"
+        AWS_DEFAULT_REGION: "{{ aws_region }}"
+      register: ecr_login
+      changed_when: false
       
     - name: Pull Docker image
       docker_image:
@@ -109,23 +151,42 @@
     - name: Display container status
       debug:
         msg: |
-          Container Status: {{ container_info.container.State.Status }}
-          Container Health: {{ container_info.container.State.Health.Status | default('N/A') }}
-          Image: {{ container_info.container.Config.Image }}
-          Ports: {{ container_info.container.NetworkSettings.Ports }}
+          ✅ Container Deploy Success!
+          
+          📊 Status Details:
+          • Container Status: {{ container_info.container.State.Status }}
+          • Container Health: {{ container_info.container.State.Health.Status | default('N/A') }}
+          • Image: {{ container_info.container.Config.Image }}
+          • Ports: {{ container_info.container.NetworkSettings.Ports }}
+          • Server: {{ ansible_hostname }}
+          • IP: {{ ansible_default_ipv4.address }}
           
     - name: Test HTTP response
       uri:
         url: "http://{{ ansible_default_ipv4.address }}:{{ host_port }}"
         method: GET
         status_code: 200
-      retries: 3
-      delay: 5
+      retries: 5
+      delay: 10
       register: http_test
       
     - name: Test health endpoint
       uri:
         url: "http://{{ ansible_default_ipv4.address }}:{{ host_port }}/health"
+        method: GET
+        status_code: 200
+      retries: 5
+      delay: 10
+      ignore_errors: yes
+      register: health_test
+      
+    - name: Display test results
+      debug:
+        msg: |
+          🧪 Connectivity Tests:
+          • HTTP Test: {{ 'PASSED' if http_test.status == 200 else 'FAILED' }}
+          • Health Check: {{ 'PASSED' if health_test.status == 200 else 'FAILED' }}
+          • Access URL: http://{{ ansible_default_ipv4.address }}:{{ host_port }}
         method: GET
         status_code: 200
       retries: 3

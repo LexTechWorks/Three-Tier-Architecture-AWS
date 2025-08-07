@@ -185,7 +185,7 @@ pipeline {
                             scp -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ${env.ANSIBLE_DIR}/test-connectivity.yml ubuntu@${env.BASTION_IP}:~/ansible/
                             scp -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ${env.ANSIBLE_DIR}/templates/* ubuntu@${env.BASTION_IP}:~/ansible/templates/
                             
-                            # Copia deploy-docker.yml se existir
+                            # Copia deploy-docker.yml
                             scp -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ${env.ANSIBLE_DIR}/deploy-docker.yml ubuntu@${env.BASTION_IP}:~/ansible/ || echo "deploy-docker.yml não encontrado"
                             
                             # Configurar permissões
@@ -198,34 +198,44 @@ pipeline {
                             ssh -i \${SSH_KEY_FILE} -o StrictHostKeyChecking=no ubuntu@${env.BASTION_IP} << 'EOF'
                             cd ~/ansible
                             
+                            # Configura logs detalhados
+                            export ANSIBLE_LOG_PATH="~/ansible/ansible-deploy.log"
+                            export ANSIBLE_DEBUG=1
+                            
                             # Configura credenciais AWS no Bastion para inventário dinâmico
                             export AWS_ACCESS_KEY_ID="\${AWS_ACCESS_KEY_ID}"
                             export AWS_SECRET_ACCESS_KEY="\${AWS_SECRET_ACCESS_KEY}"
                             export AWS_DEFAULT_REGION="us-east-1"
                             
+                            echo "📝 Log iniciado em \$(date)" | tee -a ~/ansible/deploy.log
+                            
                             # Aguarda instâncias de aplicação ficarem prontas
-                            echo "⏳ Aguardando instâncias de aplicação..."
+                            echo "⏳ Aguardando instâncias de aplicação..." | tee -a ~/ansible/deploy.log
                             sleep 90
                             
                             # Testa inventário dinâmico AWS
-                            echo "🔍 Testando inventário dinâmico AWS..."
-                            ansible-inventory -i aws_ec2.yml --list || echo "⚠️ Inventário dinâmico falhou"
-                            ansible-inventory -i aws_ec2.yml --graph || echo "⚠️ Graph do inventário falhou"
+                            echo "🔍 Testando inventário dinâmico AWS..." | tee -a ~/ansible/deploy.log
+                            ansible-inventory -i aws_ec2.yml --list 2>&1 | tee -a ~/ansible/inventory.log || echo "⚠️ Inventário dinâmico falhou" | tee -a ~/ansible/deploy.log
+                            ansible-inventory -i aws_ec2.yml --graph 2>&1 | tee -a ~/ansible/inventory.log || echo "⚠️ Graph do inventário falhou" | tee -a ~/ansible/deploy.log
                             
                             # Testa conectividade com grupos dinâmicos
-                            echo "🏓 Testando conectividade com grupos dinâmicos..."
-                            ansible role_application -i aws_ec2.yml -m ping --ssh-common-args='-o ConnectTimeout=10 -o StrictHostKeyChecking=no' || \\
-                            ansible tier_application -i aws_ec2.yml -m ping --ssh-common-args='-o ConnectTimeout=10 -o StrictHostKeyChecking=no' || \\
-                            echo "⚠️ Conectividade inicial falhou, pode ser normal se instâncias ainda estão inicializando"
+                            echo "🏓 Testando conectividade com grupos dinâmicos..." | tee -a ~/ansible/deploy.log
+                            ansible role_application -i aws_ec2.yml -m ping --ssh-common-args='-o ConnectTimeout=10 -o StrictHostKeyChecking=no' -v 2>&1 | tee -a ~/ansible/connectivity.log || \\
+                            ansible tier_application -i aws_ec2.yml -m ping --ssh-common-args='-o ConnectTimeout=10 -o StrictHostKeyChecking=no' -v 2>&1 | tee -a ~/ansible/connectivity.log || \\
+                            echo "⚠️ Conectividade inicial falhou, pode ser normal se instâncias ainda estão inicializando" | tee -a ~/ansible/deploy.log
                             
                             # Executa teste de conectividade detalhado
-                            echo "🧪 Executando teste de conectividade detalhado..."
-                            ansible-playbook test-connectivity.yml -i aws_ec2.yml --ssh-common-args='-o StrictHostKeyChecking=no' --limit 'role_application:tier_application' || \\
-                            echo "⚠️ Teste de conectividade falhou - continuando com deploy principal"
+                            echo "🧪 Executando teste de conectividade detalhado..." | tee -a ~/ansible/deploy.log
+                            ansible-playbook test-connectivity.yml -i aws_ec2.yml --ssh-common-args='-o StrictHostKeyChecking=no' --limit 'role_application:tier_application' -v 2>&1 | tee -a ~/ansible/test-connectivity.log || \\
+                            echo "⚠️ Teste de conectividade falhou - continuando com deploy principal" | tee -a ~/ansible/deploy.log
                             
                             # Executa playbook principal do Nginx usando inventário dinâmico
-                            echo "🚀 Configurando Nginx nos servidores de aplicação via inventário dinâmico..."
-                            ansible-playbook playbook-nginx.yml -i aws_ec2.yml --ssh-common-args='-o StrictHostKeyChecking=no' --limit 'role_application:tier_application' -v
+                            echo "🚀 Configurando Nginx nos servidores de aplicação via inventário dinâmico..." | tee -a ~/ansible/deploy.log
+                            ansible-playbook playbook-nginx.yml -i aws_ec2.yml --ssh-common-args='-o StrictHostKeyChecking=no' --limit 'role_application:tier_application' -v 2>&1 | tee -a ~/ansible/nginx-deploy.log
+                            
+                            echo "📝 Deploy finalizado em \$(date)" | tee -a ~/ansible/deploy.log
+                            echo "📊 Resumo dos logs criados:" | tee -a ~/ansible/deploy.log
+                            ls -la ~/ansible/*.log | tee -a ~/ansible/deploy.log
 EOF
                         """
                     }

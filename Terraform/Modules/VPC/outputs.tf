@@ -8,6 +8,14 @@ output "bastion_subnet_id" {
   value       = aws_subnet.public_subnet_bastion.id
 }
 
+output "public_subnet_ids" {
+  description = "IDs das subnets públicas para ALB"
+  value = [
+    aws_subnet.public_subnet_bastion.id,
+    aws_subnet.public_subnet_alb_b.id
+  ]
+}
+
 output "private_app_subnet_ids" {
   description = "IDs das subnets privadas para aplicação"
   value = [

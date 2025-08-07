@@ -10,6 +10,12 @@ variable "bastion_subnet_cidr" {
   default     = "10.0.1.0/24"
 }
 
+variable "public_subnet_alb_b_cidr" {
+  description = "CIDR para segunda subnet pública (ALB zona B)"
+  type        = string
+  default     = "10.0.6.0/24"
+}
+
 variable "app_subnet_cidrs" {
   description = "CIDRs para subnets privadas da aplicação"
   type        = map(string)

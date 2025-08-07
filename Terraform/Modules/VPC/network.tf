@@ -20,7 +20,7 @@ resource "aws_internet_gateway" "internet_gateway" {
   }
 }
 
-# Subnet Pública (Bastion)
+# Subnets Públicas
 resource "aws_subnet" "public_subnet_bastion" {
   vpc_id                  = aws_vpc.vpc.id
   cidr_block              = var.bastion_subnet_cidr
@@ -29,6 +29,21 @@ resource "aws_subnet" "public_subnet_bastion" {
 
   tags = {
     Name        = "${var.environment}-public-bastion"
+    Environment = var.environment
+    Tier        = "public"
+    ManagedBy   = "terraform"
+  }
+}
+
+# Segunda subnet pública para ALB (zona B)
+resource "aws_subnet" "public_subnet_alb_b" {
+  vpc_id                  = aws_vpc.vpc.id
+  cidr_block              = var.public_subnet_alb_b_cidr
+  availability_zone       = var.availability_zones["b"]
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name        = "${var.environment}-public-alb-b"
     Environment = var.environment
     Tier        = "public"
     ManagedBy   = "terraform"
@@ -141,6 +156,11 @@ resource "aws_route_table" "private_route_table" {
 # Route Table Associations
 resource "aws_route_table_association" "rta_bastion" {
   subnet_id      = aws_subnet.public_subnet_bastion.id
+  route_table_id = aws_route_table.public_route_table.id
+}
+
+resource "aws_route_table_association" "rta_public_alb_b" {
+  subnet_id      = aws_subnet.public_subnet_alb_b.id
   route_table_id = aws_route_table.public_route_table.id
 }
 
