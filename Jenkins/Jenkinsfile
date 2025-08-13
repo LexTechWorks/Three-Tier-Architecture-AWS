@@ -20,23 +20,9 @@ pipeline {
         TF_BACKEND_REGION = 'us-east-1'
         TF_DIR = 'Terraform/Environment'
         ANSIBLE_DIR = 'Ansible'
-        // Expor parâmetros como variáveis de ambiente para uso no shell
-        PUBLIC_KEY_PATH   = "${params.PUBLIC_KEY_PATH}"
-        ALLOWED_SSH_CIDR  = "${params.ALLOWED_SSH_CIDR}"
-        DOMAIN_NAME       = "${params.DOMAIN_NAME}"
         // Cache e timeout para provedores Terraform
         TF_PLUGIN_CACHE_DIR = "${WORKSPACE}/.terraform.d/plugin-cache"
         TF_REGISTRY_CLIENT_TIMEOUT = '180'
-        // Passar variáveis obrigatórias ao Terraform via TF_VAR_*
-        TF_VAR_public_key_path  = "${params.PUBLIC_KEY_PATH}"
-        TF_VAR_allowed_ssh_cidr = "${params.ALLOWED_SSH_CIDR}"
-        TF_VAR_domain_name      = "${params.DOMAIN_NAME}"
-    }
-
-    parameters {
-        string(name: 'PUBLIC_KEY_PATH', defaultValue: '~/.ssh/aws-key.pub', description: 'Caminho da chave pública SSH no agente Jenkins')
-        string(name: 'ALLOWED_SSH_CIDR', defaultValue: '0.0.0.0/0', description: 'CIDR permitido para SSH (use seu IP/32 em produção)')
-        string(name: 'DOMAIN_NAME', defaultValue: 'example.com', description: 'Nome do domínio para o Route53')
     }
 
     stages {
@@ -109,15 +95,41 @@ pipeline {
 
                     dir(env.TF_DIR) {
                         sh '''
-                            # Resolve caminho da chave pública (expande ~ e variáveis)
-                            RESOLVED_PUBLIC_KEY_PATH=$(eval echo "$PUBLIC_KEY_PATH")
+                            set -e
+                            echo "🔧 Gerando variáveis automaticamente (sem input manual)..."
 
-                            # Gera arquivo auto.tfvars com os valores fornecidos via parâmetros
+                            # Caminho padrão da chave pública dentro do workspace
+                            PUB_KEY_PATH="$WORKSPACE/Terraform/Environment/aws-key.pub"
+
+                            # Gera par de chaves se não existir
+                            if [ ! -f "$PUB_KEY_PATH" ]; then
+                              echo "🔑 Gerando nova chave SSH..."
+                              if command -v ssh-keygen >/dev/null 2>&1; then
+                                ssh-keygen -t ed25519 -f "$WORKSPACE/Terraform/Environment/aws-key" -N "" -C "jenkins-auto" || \
+                                ssh-keygen -t rsa -b 4096 -f "$WORKSPACE/Terraform/Environment/aws-key" -N "" -C "jenkins-auto"
+                              else
+                                echo "❌ ssh-keygen não encontrado"; exit 1
+                              fi
+                            fi
+
+                            # Descobre IP público do agente para liberar SSH somente a partir dele
+                            CURRENT_IP=$( (curl -s --max-time 5 https://checkip.amazonaws.com || curl -s --max-time 5 https://api.ipify.org) | tr -d '\r\n' || true )
+                            if [ -z "$CURRENT_IP" ]; then
+                              echo "⚠️ Não foi possível obter IP público, usando 0.0.0.0/0 (menos seguro)";
+                              ALLOWED_SSH_CIDR="0.0.0.0/0"
+                            else
+                              ALLOWED_SSH_CIDR="$CURRENT_IP/32"
+                            fi
+
+                            DOMAIN_NAME_VALUE="lextechworks.com"
+
                             cat > terraform.auto.tfvars <<EOF
-public_key_path   = "${RESOLVED_PUBLIC_KEY_PATH}"
-allowed_ssh_cidr  = "${ALLOWED_SSH_CIDR}"
-domain_name       = "${DOMAIN_NAME}"
+public_key_path  = "$PUB_KEY_PATH"
+allowed_ssh_cidr = "$ALLOWED_SSH_CIDR"
+domain_name      = "$DOMAIN_NAME_VALUE"
 EOF
+                            echo "📄 Conteúdo gerado de terraform.auto.tfvars:" && cat terraform.auto.tfvars
+
                             terraform plan -out=tfplan
                         '''
                     }
