@@ -96,23 +96,17 @@ pipeline {
                     dir(env.TF_DIR) {
                         sh '''
                             set -e
-                            echo "🔧 Gerando variáveis automaticamente (sem input manual)..."
+                            echo "🔧 Preparando variáveis automaticamente (usando chave existente)..."
 
-                            # Caminho padrão da chave pública dentro do workspace
-                            PUB_KEY_PATH="$WORKSPACE/Terraform/Environment/aws-key.pub"
-
-                            # Gera par de chaves se não existir
+                            # Usa chave pública já instalada no agente Jenkins
+                            PUB_KEY_PATH="$HOME/.ssh/aws-key.pub"
                             if [ ! -f "$PUB_KEY_PATH" ]; then
-                              echo "🔑 Gerando nova chave SSH..."
-                              if command -v ssh-keygen >/dev/null 2>&1; then
-                                ssh-keygen -t ed25519 -f "$WORKSPACE/Terraform/Environment/aws-key" -N "" -C "jenkins-auto" || \
-                                ssh-keygen -t rsa -b 4096 -f "$WORKSPACE/Terraform/Environment/aws-key" -N "" -C "jenkins-auto"
-                              else
-                                echo "❌ ssh-keygen não encontrado"; exit 1
-                              fi
+                              echo "❌ Chave pública não encontrada em $PUB_KEY_PATH";
+                              echo "   Certifique-se de que o arquivo existe e tem permissões corretas.";
+                              exit 1
                             fi
 
-                            # Descobre IP público do agente para liberar SSH somente a partir dele
+                            # Descobre IP público do agente (para restringir SSH); fallback inseguro se falhar
                             CURRENT_IP=$( (curl -s --max-time 5 https://checkip.amazonaws.com || curl -s --max-time 5 https://api.ipify.org) | tr -d '\r\n' || true )
                             if [ -z "$CURRENT_IP" ]; then
                               echo "⚠️ Não foi possível obter IP público, usando 0.0.0.0/0 (menos seguro)";
@@ -128,7 +122,7 @@ public_key_path  = "$PUB_KEY_PATH"
 allowed_ssh_cidr = "$ALLOWED_SSH_CIDR"
 domain_name      = "$DOMAIN_NAME_VALUE"
 EOF
-                            echo "📄 Conteúdo gerado de terraform.auto.tfvars:" && cat terraform.auto.tfvars
+                            echo "📄 terraform.auto.tfvars gerado:" && cat terraform.auto.tfvars
 
                             terraform plan -out=tfplan
                         '''
