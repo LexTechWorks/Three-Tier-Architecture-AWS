@@ -23,6 +23,11 @@ pipeline {
         // Cache e timeout para provedores Terraform
         TF_PLUGIN_CACHE_DIR = "${WORKSPACE}/.terraform.d/plugin-cache"
         TF_REGISTRY_CLIENT_TIMEOUT = '180'
+        // Chave SSH já existente no host Jenkins
+        SSH_PUBLIC_KEY_PATH = "${HOME}/.ssh/aws-key.pub"
+        SSH_PRIVATE_KEY_PATH = "${HOME}/.ssh/aws-key.pem"
+        // Flag para (re)criar o bastion garantindo authorized_keys atualizado
+        FORCE_RECREATE_BASTION = 'true'
     }
 
     stages {
@@ -98,18 +103,15 @@ pipeline {
                             set -e
                             echo "🔧 Preparando variáveis automaticamente (usando chave existente)..."
 
-                            # Usa chave pública já instalada no agente Jenkins
-                            PUB_KEY_PATH="$HOME/.ssh/aws-key.pub"
+                            PUB_KEY_PATH="$SSH_PUBLIC_KEY_PATH"
                             if [ ! -f "$PUB_KEY_PATH" ]; then
                               echo "❌ Chave pública não encontrada em $PUB_KEY_PATH";
-                              echo "   Certifique-se de que o arquivo existe e tem permissões corretas.";
                               exit 1
                             fi
 
-                            # Descobre IP público do agente (para restringir SSH); fallback inseguro se falhar
                             CURRENT_IP=$( (curl -s --max-time 5 https://checkip.amazonaws.com || curl -s --max-time 5 https://api.ipify.org) | tr -d '\r\n' || true )
                             if [ -z "$CURRENT_IP" ]; then
-                              echo "⚠️ Não foi possível obter IP público, usando 0.0.0.0/0 (menos seguro)";
+                              echo "⚠️ Não foi possível obter IP público, usando 0.0.0.0/0";
                               ALLOWED_SSH_CIDR="0.0.0.0/0"
                             else
                               ALLOWED_SSH_CIDR="$CURRENT_IP/32"
@@ -122,11 +124,22 @@ public_key_path  = "$PUB_KEY_PATH"
 allowed_ssh_cidr = "$ALLOWED_SSH_CIDR"
 domain_name      = "$DOMAIN_NAME_VALUE"
 EOF
-                            echo "📄 terraform.auto.tfvars gerado:" && cat terraform.auto.tfvars
+                            echo "📄 terraform.auto.tfvars:" && cat terraform.auto.tfvars
 
                             terraform plan -out=tfplan
                         '''
                     }
+                }
+            }
+        }
+
+        /* ---------- Force Bastion Recreate -------------------------------- */
+        stage('Force Bastion Recreate') {
+            when { expression { return env.FORCE_RECREATE_BASTION?.toBoolean() } }
+            steps {
+                dir(env.TF_DIR) {
+                    echo "♻️ Taint do bastion para recriar com a chave pública atual"
+                    sh 'terraform taint -allow-missing module.bastion.aws_instance.bastion || true'
                 }
             }
         }
@@ -141,27 +154,14 @@ EOF
 
                     dir(env.TF_DIR) {
                         sh 'terraform apply -auto-approve tfplan'
-                        
-                        // Captura outputs importantes para o Ansible
                         script {
                             try {
-                                env.BASTION_IP = sh(
-                                    script: 'terraform output -raw bastion_public_ip',
-                                    returnStdout: true
-                                ).trim()
-                                
-                                env.ALB_DNS = sh(
-                                    script: 'terraform output -raw alb_dns_name',
-                                    returnStdout: true
-                                ).trim()
-                                
-                                echo "✅ Infraestrutura criada:"
-                                echo "   • Bastion IP: ${env.BASTION_IP}"
-                                echo "   • ALB DNS: ${env.ALB_DNS}"
-                                
-                            } catch (Exception e) {
-                                echo "⚠️ Não foi possível capturar alguns outputs: ${e.message}"
-                            }
+                                env.BASTION_IP = sh(script: 'terraform output -raw bastion_public_ip', returnStdout: true).trim()
+                                env.ALB_DNS = sh(script: 'terraform output -raw alb_dns_name', returnStdout: true).trim()
+                                echo "✅ Infraestrutura criada:";
+                                echo "   • Bastion IP: ${env.BASTION_IP}";
+                                echo "   • ALB DNS: ${env.ALB_DNS}";
+                            } catch (Exception e) { echo "⚠️ Não foi possível capturar alguns outputs: ${e.message}" }
                         }
                     }
                 }
