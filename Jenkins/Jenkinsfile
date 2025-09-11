@@ -20,6 +20,14 @@ pipeline {
         TF_BACKEND_REGION = 'us-east-1'
         TF_DIR = 'Terraform/Environment'
         ANSIBLE_DIR = 'Ansible'
+        // Cache e timeout para provedores Terraform
+        TF_PLUGIN_CACHE_DIR = "${WORKSPACE}/.terraform.d/plugin-cache"
+        TF_REGISTRY_CLIENT_TIMEOUT = '180'
+        // Chave SSH já existente no host Jenkins
+        SSH_PUBLIC_KEY_PATH = "${HOME}/.ssh/aws-key.pub"
+        SSH_PRIVATE_KEY_PATH = "${HOME}/.ssh/aws-key.pem"
+        // Flag para (re)criar o bastion garantindo authorized_keys atualizado
+        FORCE_RECREATE_BASTION = 'true'
     }
 
     stages {
@@ -43,20 +51,27 @@ pipeline {
         stage('Terraform Init') {
             steps {
                 withCredentials([usernamePassword(
-                    credentialsId: 'aws-terraform',
+                    credentialsId: 'LexTechWorks-AWS',
                     usernameVariable: 'AWS_ACCESS_KEY_ID',
                     passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
 
                     dir(env.TF_DIR) {
                         script {
+                            // Garante diretório de cache de providers
+                            sh 'mkdir -p "$TF_PLUGIN_CACHE_DIR"'
+
                             if (env.TF_BACKEND_BUCKET?.trim()) {
-                                sh """
-                                  terraform init \\
-                                    -backend-config="bucket=${TF_BACKEND_BUCKET}" \\
-                                    -backend-config="region=${TF_BACKEND_REGION}"
-                                """
+                                retry(3) {
+                                    sh """
+                                      terraform init \\
+                                        -backend-config="bucket=${TF_BACKEND_BUCKET}" \\
+                                        -backend-config="region=${TF_BACKEND_REGION}"
+                                    """
+                                }
                             } else {
-                                sh 'terraform init'
+                                retry(3) {
+                                    sh 'terraform init'
+                                }
                             }
                         }
                     }
@@ -79,13 +94,52 @@ pipeline {
         stage('Terraform Plan') {
             steps {
                 withCredentials([usernamePassword(
-                    credentialsId: 'aws-terraform',
+                    credentialsId: 'LexTechWorks-AWS',
                     usernameVariable: 'AWS_ACCESS_KEY_ID',
                     passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
 
                     dir(env.TF_DIR) {
-                        sh 'terraform plan -out=tfplan'
+                        sh '''
+                            set -e
+                            echo "🔧 Preparando variáveis automaticamente (usando chave existente)..."
+
+                            PUB_KEY_PATH="$SSH_PUBLIC_KEY_PATH"
+                            if [ ! -f "$PUB_KEY_PATH" ]; then
+                              echo "❌ Chave pública não encontrada em $PUB_KEY_PATH";
+                              exit 1
+                            fi
+
+                            CURRENT_IP=$( (curl -s --max-time 5 https://checkip.amazonaws.com || curl -s --max-time 5 https://api.ipify.org) | tr -d '\r\n' || true )
+                            if [ -z "$CURRENT_IP" ]; then
+                              echo "⚠️ Não foi possível obter IP público, usando 0.0.0.0/0";
+                              ALLOWED_SSH_CIDR="0.0.0.0/0"
+                            else
+                              ALLOWED_SSH_CIDR="$CURRENT_IP/32"
+                            fi
+
+                            DOMAIN_NAME_VALUE="lextechworks.com"
+
+                            cat > terraform.auto.tfvars <<EOF
+public_key_path  = "$PUB_KEY_PATH"
+allowed_ssh_cidr = "$ALLOWED_SSH_CIDR"
+domain_name      = "$DOMAIN_NAME_VALUE"
+EOF
+                            echo "📄 terraform.auto.tfvars:" && cat terraform.auto.tfvars
+
+                            terraform plan -out=tfplan
+                        '''
                     }
+                }
+            }
+        }
+
+        /* ---------- Force Bastion Recreate -------------------------------- */
+        stage('Force Bastion Recreate') {
+            when { expression { return env.FORCE_RECREATE_BASTION?.toBoolean() } }
+            steps {
+                dir(env.TF_DIR) {
+                    echo "♻️ Taint do bastion para recriar com a chave pública atual"
+                    sh 'terraform taint -allow-missing module.bastion.aws_instance.bastion || true'
                 }
             }
         }
@@ -94,33 +148,20 @@ pipeline {
         stage('Terraform Apply') {
             steps {
                 withCredentials([usernamePassword(
-                    credentialsId: 'aws-terraform',
+                    credentialsId: 'LexTechWorks-AWS',
                     usernameVariable: 'AWS_ACCESS_KEY_ID',
                     passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
 
                     dir(env.TF_DIR) {
                         sh 'terraform apply -auto-approve tfplan'
-                        
-                        // Captura outputs importantes para o Ansible
                         script {
                             try {
-                                env.BASTION_IP = sh(
-                                    script: 'terraform output -raw bastion_public_ip',
-                                    returnStdout: true
-                                ).trim()
-                                
-                                env.ALB_DNS = sh(
-                                    script: 'terraform output -raw alb_dns_name',
-                                    returnStdout: true
-                                ).trim()
-                                
-                                echo "✅ Infraestrutura criada:"
-                                echo "   • Bastion IP: ${env.BASTION_IP}"
-                                echo "   • ALB DNS: ${env.ALB_DNS}"
-                                
-                            } catch (Exception e) {
-                                echo "⚠️ Não foi possível capturar alguns outputs: ${e.message}"
-                            }
+                                env.BASTION_IP = sh(script: 'terraform output -raw bastion_public_ip', returnStdout: true).trim()
+                                env.ALB_DNS = sh(script: 'terraform output -raw alb_dns_name', returnStdout: true).trim()
+                                echo "✅ Infraestrutura criada:";
+                                echo "   • Bastion IP: ${env.BASTION_IP}";
+                                echo "   • ALB DNS: ${env.ALB_DNS}";
+                            } catch (Exception e) { echo "⚠️ Não foi possível capturar alguns outputs: ${e.message}" }
                         }
                     }
                 }
@@ -135,7 +176,7 @@ pipeline {
             steps {
                 withCredentials([
                     usernamePassword(
-                        credentialsId: 'aws-terraform',
+                        credentialsId: 'LexTechWorks-AWS',
                         usernameVariable: 'AWS_ACCESS_KEY_ID',
                         passwordVariable: 'AWS_SECRET_ACCESS_KEY'
                     ),
